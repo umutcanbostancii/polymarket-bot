@@ -1,21 +1,22 @@
-"""Polymarket bot entrypoint with core-only strategy orchestration."""
+"""BTC 5-min fast loop bot for Polymarket Up or Down markets."""
 
 import asyncio
+import json
 import logging
 import os
 import signal
-from typing import Optional
+import time
 
 from config import config
 from core.binance_feed import BinanceFeed
 from core.database import TradeDB
+from core.execution_validator import ExecutionValidator
 from core.executor import Executor
+from core.monitoring import MonitoringEngine
 from core.polymarket_client import PolymarketClient
 from core.risk_manager import RiskManager
-from core.trade_resolver import TradeResolver
-from dashboard.server import DashboardServer
-from strategies.binance_spot_margin_core import BinanceSpotMarginCoreStrategy
-from strategies.polymarket_core import PolymarketCoreStrategy
+from strategies.btc_5min_fast import BTC5MinFastStrategy
+from strategies.btc_15min import BTC15MinStrategy
 from utils.logger import setup_logging
 
 setup_logging(config.LOG_LEVEL)
@@ -36,7 +37,6 @@ def _process_exists(pid: int) -> bool:
 
 def _acquire_pid_lock(path: str) -> int:
     pid = os.getpid()
-
     if os.path.exists(path):
         try:
             with open(path, "r", encoding="utf-8") as fh:
@@ -44,13 +44,10 @@ def _acquire_pid_lock(path: str) -> int:
             existing = int(raw) if raw else 0
         except Exception:
             existing = 0
-
         if existing and existing != pid and _process_exists(existing):
             raise RuntimeError(f"Another bot process is active (pid={existing}).")
-
     with open(path, "w", encoding="utf-8") as fh:
         fh.write(str(pid))
-
     return pid
 
 
@@ -63,12 +60,20 @@ def _release_pid_lock(path: str, pid: int):
         existing = int(raw) if raw else 0
     except Exception:
         existing = 0
-
     if existing == pid:
         try:
             os.remove(path)
         except OSError:
             pass
+
+
+def _write_status(status: dict):
+    """Write bot status to a JSON file for external scripts to read."""
+    try:
+        with open(config.STATUS_FILE, "w", encoding="utf-8") as fh:
+            json.dump(status, fh, indent=2)
+    except Exception:
+        pass
 
 
 class Bot:
@@ -79,61 +84,112 @@ class Bot:
         self.db = TradeDB(config.DB_PATH)
         self.risk = RiskManager(config, self.db)
         self.executor = Executor(config, self.db)
+        self.validator = ExecutionValidator(config)
+        self.monitoring = MonitoringEngine(config)
 
-        deps = (config, self.poly, self.binance, self.db, self.risk, self.executor)
-        self.strategies = [
-            PolymarketCoreStrategy(*deps),
-            BinanceSpotMarginCoreStrategy(*deps),
-        ]
+        # DeepSeek AI predictor (opsiyonel)
+        self.predictor = None
+        if config.DEEPSEEK_API_KEY:
+            try:
+                from core.deepseek_predictor import DeepSeekPredictor
+                self.predictor = DeepSeekPredictor(
+                    config.DEEPSEEK_API_KEY, config.DEEPSEEK_MODEL
+                )
+                log.info("DeepSeek AI predictor enabled")
+            except Exception as e:
+                log.warning(f"DeepSeek init failed: {e}")
 
-        # Optional legacy strategies (disabled by default).
-        if not getattr(config, "CORE_STRATEGIES_ONLY", True):
-            from strategies.binance_spot import BinanceSpotTrader
-            from strategies.binance_trader import BinanceMomentumTrader
-            from strategies.sum_to_one import SumToOneStrategy
-            from strategies.temporal_arb import TemporalArbStrategy
-            from strategies.weather_arb import WeatherArbStrategy
+        self.strategy = BTC5MinFastStrategy(
+            config, self.poly, self.binance, self.db, self.risk, self.executor,
+            validator=self.validator,
+            monitoring=self.monitoring,
+            predictor=self.predictor,
+        )
 
-            self.strategies.extend(
-                [
-                    BinanceMomentumTrader(*deps),
-                    BinanceSpotTrader(*deps),
-                    SumToOneStrategy(*deps),
-                    TemporalArbStrategy(*deps),
-                    WeatherArbStrategy(*deps),
-                ]
-            )
-
-        self.resolver = TradeResolver(config, self.db, self.poly, self.binance, self.strategies)
-        self.dashboard = DashboardServer(config, self.db, self.risk, self.binance, self.poly)
+        self.strategy_15m = BTC15MinStrategy(
+            config, self.poly, self.binance, self.db, self.risk, self.executor,
+            validator=self.validator,
+            monitoring=self.monitoring,
+            predictor=self.predictor,
+        )
 
         self._running = False
         self._tasks = []
+        self._start_time = 0.0
+        self._15m_enabled_cache = False
+        self._15m_enabled_check_ts = 0.0
+
+    async def _recover_open_positions(self):
+        """Botrecover başladığında açık pozisyonları bul ve resolution zamanla."""
+        log.info("Recovering open positions...")
+        open_trades = self.db.get_open_trades()
+        if not open_trades:
+            log.info("No open positions to recover")
+            return
+        
+        log.info(f"Found {len(open_trades)} open positions, scheduling resolution...")
+        
+        for trade in open_trades:
+            trade_id = trade["id"]
+            # Market'in ne zaman bittiğini bul (ts'ye bakarak)
+            trade_ts = trade.get("ts", "")
+            # Eski trade'ler için yaklaşık 5 dk bekleme
+            # Yeni trade'ler için market end time'ı hesapla
+            import time
+            now = time.time()
+            
+            # Market genellikle 5 dk sürüyor, trade zamanından itibaren kalan süre
+            # Basitçe 5 dakika sonrasını bekle
+            remaining = 5  # saniye - hemen resolve et
+            
+            asyncio.create_task(
+                self.strategy.force_resolve_trade(
+                    trade_id=trade_id,
+                    direction="up" if "UP" in trade.get("side", "") else "down",
+                    market_id=trade.get("market_id", ""),
+                    remaining=remaining,
+                )
+            )
+            log.info(f"Scheduled resolution for trade #{trade_id}")
+
+    def _is_15m_enabled(self) -> bool:
+        """Check if 15m strategy is enabled (cached for 10s)."""
+        now = time.time()
+        if now - self._15m_enabled_check_ts < 10:
+            return self._15m_enabled_cache
+        self._15m_enabled_check_ts = now
+        self._15m_enabled_cache = os.path.exists(config.MARKET_15M_FILE)
+        return self._15m_enabled_cache
 
     async def start(self):
         mode = "PAPER" if config.PAPER_TRADING else "LIVE"
         log.info("=" * 60)
-        log.info(f"Starting bot | mode={mode} | bankroll=${config.BANKROLL:,.2f}")
-        log.info(f"Strategies: {[s.name for s in self.strategies]}")
+        log.info(f"BTC 5-min + 15-min Fast Loop Bot | mode={mode}")
+        log.info(f"Trade size: ${config.TRADE_SIZE_USD} | Edge threshold: {config.EDGE_THRESHOLD}")
+        log.info(f"Loop interval: {config.LOOP_INTERVAL}s | 15m: {'ON' if self._is_15m_enabled() else 'OFF'}")
         log.info("=" * 60)
 
         self.db.start()
         await self.poly.start()
         await self.binance.start()
-        await self.dashboard.start()
         self._running = True
+        self._start_time = time.time()
 
-        coros = [self._run_strategy(s) for s in self.strategies]
-        coros.extend(
-            [
-                self._stats_loop(),
-                self._position_monitor(),
-                self._validation_loop(),
-                self.resolver.run(),
-            ]
-        )
+        # Acık pozisyonları Kurtar (restart sonrasi)
+        await self._recover_open_positions()
 
-        self._tasks = [asyncio.create_task(c) for c in coros]
+        _write_status({
+            "running": True,
+            "mode": mode,
+            "started_at": time.strftime("%Y-%m-%d %H:%M:%S UTC", time.gmtime()),
+            "pid": os.getpid(),
+        })
+
+        self._tasks = [
+            asyncio.create_task(self._fast_loop()),
+            asyncio.create_task(self._stats_loop()),
+            asyncio.create_task(self._status_writer()),
+        ]
 
         try:
             await asyncio.gather(*self._tasks)
@@ -143,96 +199,177 @@ class Bot:
     async def stop(self):
         if not self._running:
             return
-
         log.info("Stopping bot")
         self._running = False
 
         for t in self._tasks:
             if not t.done():
                 t.cancel()
-
         if self._tasks:
             await asyncio.gather(*self._tasks, return_exceptions=True)
             self._tasks.clear()
 
-        await self.dashboard.stop()
         await self.poly.stop()
         await self.binance.stop()
         self.db.stop()
 
-    async def _run_strategy(self, strategy):
-        log.info(f"loop started: {strategy.name} interval={strategy.interval}s")
+        _write_status({"running": False, "stopped_at": time.strftime("%Y-%m-%d %H:%M:%S UTC", time.gmtime())})
+
+    async def _fast_loop(self):
+        """Core fast loop - runs strategy.scan() every LOOP_INTERVAL seconds."""
+        # Wait for Binance warmup
+        while self._running and not self.binance.warmup_complete:
+            await asyncio.sleep(0.5)
+
+        log.info(f"Fast loop started (interval={config.LOOP_INTERVAL}s)")
+
         while self._running:
             try:
-                ok, reason = self.risk.can_trade_strategy(strategy.name)
-                if not ok:
-                    log.warning(f"{strategy.name} paused: {reason}")
-                    await asyncio.sleep(10)
-                    continue
-                await strategy.scan()
+                await self.strategy.scan()
             except asyncio.CancelledError:
                 raise
             except Exception as exc:
-                log.error(f"{strategy.name} error: {exc}", exc_info=True)
-                await asyncio.sleep(max(2 * strategy.interval, 5))
-            await asyncio.sleep(strategy.interval)
+                log.error(f"Strategy scan error: {exc}", exc_info=True)
+                await asyncio.sleep(5)
+
+            # 15m strategy (if enabled via dashboard toggle)
+            if self._is_15m_enabled():
+                try:
+                    await self.strategy_15m.scan()
+                except asyncio.CancelledError:
+                    raise
+                except Exception as exc:
+                    log.error(f"15m strategy scan error: {exc}", exc_info=True)
+
+            await asyncio.sleep(config.LOOP_INTERVAL)
 
     async def _stats_loop(self):
+        """Log stats every 5 minutes."""
         while self._running:
             await asyncio.sleep(300)
             try:
                 stats = self.db.today_stats()
+                risk_status = self.risk.status()
+                btc = self.binance.price
+                mon = self.monitoring.metrics
+                alarms = self.monitoring.check_alarms()
+
+                btc_str = f"${btc:,.2f}" if btc else "N/A"
                 log.info(
-                    f"today trades={stats['trades']} win_rate={stats['win_rate']:.1f}% pnl=${stats['pnl']:+.2f}"
+                    f"STATS: trades={stats['trades']} "
+                    f"W={stats['wins']} L={stats['losses']} "
+                    f"win_rate={stats['win_rate']:.1f}% "
+                    f"pnl=${stats['pnl']:+.2f} "
+                    f"BTC={btc_str} "
+                    f"halted={risk_status['halted']}"
                 )
-            except asyncio.CancelledError:
-                raise
-            except Exception as exc:
-                log.error(f"stats loop error: {exc}")
-
-    async def _position_monitor(self):
-        while self._running:
-            await asyncio.sleep(config.POSITION_CHECK_INTERVAL)
-            try:
-                count = self.db.open_positions_count()
-                log.info(f"open positions={count}")
-            except asyncio.CancelledError:
-                raise
-            except Exception as exc:
-                log.error(f"position monitor error: {exc}")
-
-    async def _validation_loop(self):
-        interval = max(60, int(getattr(config, "VALIDATION_RUN_INTERVAL_SECONDS", 900)))
-        while self._running:
-            await asyncio.sleep(interval)
-            try:
-                snapshot = self.db.validation_gates(
-                    window_days=config.VALIDATION_WINDOW_DAYS,
-                    bankroll=config.BANKROLL,
-                    min_trades=config.VALIDATION_MIN_TRADES,
-                    min_win_rate_pct=config.VALIDATION_MIN_WIN_RATE_PCT,
-                    min_return_pct=config.VALIDATION_MIN_RETURN_PCT,
-                    max_drawdown_pct=config.VALIDATION_MAX_DRAWDOWN_PCT,
-                    min_profit_factor=config.VALIDATION_MIN_PROFIT_FACTOR,
-                    min_median_net_trade_usd=config.VALIDATION_MIN_MEDIAN_NET_TRADE_USD,
-                )
-                self.db.log_validation_snapshot(snapshot, window_days=config.VALIDATION_WINDOW_DAYS)
-
-                passed = [s["strategy"] for s in snapshot.get("strategies", []) if s.get("pass")]
-                failed = [s["strategy"] for s in snapshot.get("strategies", []) if not s.get("pass")]
                 log.info(
-                    f"validation window={config.VALIDATION_WINDOW_DAYS}d "
-                    f"pass={len(passed)} fail={len(failed)}"
+                    f"Monitoring: {mon['opportunities_per_min']} opp/min, "
+                    f"{mon['executions_per_min']} exec/min, "
+                    f"rate={mon['execution_rate_pct']:.0f}%, "
+                    f"latency={mon['avg_latency_ms']:.0f}ms, "
+                    f"profit=${mon['total_profit']:+.2f}, "
+                    f"dd={mon['drawdown_pct']:.1f}%"
                 )
+                if alarms:
+                    log.warning(f"ALARMS: {', '.join(alarms)}")
+
+                # Save monitoring snapshot to DB
+                try:
+                    self.db.log_monitoring_snapshot(mon, alarms)
+                except Exception:
+                    pass
             except asyncio.CancelledError:
                 raise
             except Exception as exc:
-                log.error(f"validation loop error: {exc}")
+                log.error(f"Stats loop error: {exc}")
+
+    def _check_trade_size_update(self):
+        """Dashboard'dan gelen trade size değişikliğini oku."""
+        try:
+            path = config.TRADE_SIZE_FILE
+            if not os.path.exists(path):
+                return
+            with open(path, "r") as f:
+                new_size = float(f.read().strip())
+            if new_size > 0 and new_size != config.TRADE_SIZE_USD:
+                old_size = config.TRADE_SIZE_USD
+                config.TRADE_SIZE_USD = new_size
+                log.info(f"Trade size updated: ${old_size} -> ${new_size}")
+        except Exception:
+            pass
+
+    async def _status_writer(self):
+        """Periodically write status file for external scripts."""
+        while self._running:
+            await asyncio.sleep(10)
+            self._check_trade_size_update()
+            try:
+                stats = self.db.today_stats()
+                btc = self.binance.price
+                risk_status = self.risk.status()
+                uptime = time.time() - self._start_time
+
+                # Monitoring metrics
+                mon = self.monitoring.metrics
+                alarms = self.monitoring.check_alarms()
+
+                # Current market prices from strategy
+                current_market = self.strategy._current_market
+                market_prices = {}
+                if current_market:
+                    market_prices = {
+                        "up_price": current_market.get("up_price"),
+                        "down_price": current_market.get("down_price"),
+                        "market_id": current_market.get("id", ""),
+                        "question": current_market.get("question", "")[:80],
+                    }
+
+                # 15m market info
+                market_15m_prices = {}
+                current_market_15m = self.strategy_15m._current_market
+                if current_market_15m:
+                    market_15m_prices = {
+                        "up_price": current_market_15m.get("up_price"),
+                        "down_price": current_market_15m.get("down_price"),
+                        "market_id": current_market_15m.get("id", ""),
+                        "question": current_market_15m.get("question", "")[:80],
+                    }
+
+                _write_status({
+                    "running": True,
+                    "mode": "PAPER" if config.PAPER_TRADING else "LIVE",
+                    "pid": os.getpid(),
+                    "uptime_seconds": int(uptime),
+                    "btc_price": btc,
+                    "btc_connected": self.binance.connected,
+                    "poly_healthy": self.poly.healthy,
+                    "today_trades": stats["trades"],
+                    "today_wins": stats["wins"],
+                    "today_losses": stats["losses"],
+                    "today_win_rate": round(stats["win_rate"], 1),
+                    "today_pnl": round(stats["pnl"], 2),
+                    "risk_halted": risk_status["halted"],
+                    "risk_reason": risk_status["reason"],
+                    "daily_pnl": round(risk_status["daily_pnl"], 2),
+                    "consecutive_losses": risk_status["consecutive_losses"],
+                    "active_positions": risk_status.get("active_positions", 0),
+                    "market_prices": market_prices,
+                    "market_15m_prices": market_15m_prices,
+                    "market_15m_enabled": self._is_15m_enabled(),
+                    "monitoring": mon,
+                    "alarms": alarms,
+                    "trade_size": config.TRADE_SIZE_USD,
+                    "ai_enabled": self.predictor is not None,
+                    "updated_at": time.strftime("%Y-%m-%d %H:%M:%S UTC", time.gmtime()),
+                })
+            except Exception:
+                pass
 
 
 async def main():
     lock_pid = _acquire_pid_lock(config.PID_LOCK_PATH)
-    current_bot: dict = {"bot": None}
+    current_bot = {"bot": None}
 
     loop = asyncio.get_running_loop()
 
@@ -244,11 +381,8 @@ async def main():
     for sig in (signal.SIGINT, signal.SIGTERM):
         loop.add_signal_handler(sig, _signal_stop)
 
-    restart_delay = 5
-    max_restarts = 1000
-
     try:
-        for attempt in range(max_restarts):
+        for attempt in range(100):
             bot = Bot()
             current_bot["bot"] = bot
 
@@ -267,10 +401,9 @@ async def main():
             except Exception:
                 pass
 
-            await asyncio.sleep(2)
-            log.info(f"Restarting in {restart_delay}s")
-            await asyncio.sleep(restart_delay)
-            restart_delay = min(int(restart_delay * 1.5), 60)
+            delay = min(5 * (1.5 ** attempt), 60)
+            log.info(f"Restarting in {delay:.0f}s")
+            await asyncio.sleep(delay)
     finally:
         bot = current_bot.get("bot")
         if bot is not None:

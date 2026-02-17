@@ -1,11 +1,11 @@
-"""Polymarket Gamma + CLOB client with WS orderbook cache and resilient REST fallback."""
+"""Polymarket client for BTC 5-min Up or Down markets."""
 
 import asyncio
-import contextlib
 import json
 import logging
 import time
-from typing import Dict, List, Optional, Sequence, Tuple
+from datetime import datetime, timezone
+from typing import Dict, Optional
 
 import aiohttp
 
@@ -23,109 +23,46 @@ class PolymarketClient:
         self._circuit_open_until: float = 0.0
 
         self._running = False
-        self._ws_connected = False
-        self._ws_last_message: float = 0.0
-        self._ws_task: Optional[asyncio.Task] = None
-        self._ws_disabled = False
-
-        self._orderbook_cache: Dict[str, dict] = {}
-        self._subscribed_tokens = set()
-        self._subscription_lock = asyncio.Lock()
-
         self._last_rest_request_ts = 0.0
 
-    # ------------------------------------------------------------------
-    # Base URLs and headers
-    # ------------------------------------------------------------------
+        # Cache to avoid redundant discovery calls within same 5-min window
+        self._cached_market: Optional[Dict] = None
+        self._cached_market_end_ts: float = 0.0
+        self._cached_market_fetch_ts: float = 0.0  # Track when cache was last updated
 
-    @property
-    def _gamma_bases(self) -> List[str]:
-        urls = [self.cfg.GAMMA_API] + list(getattr(self.cfg, "GAMMA_API_FALLBACKS", []) or [])
-        return self._uniq_urls(urls)
-
-    @property
-    def _clob_bases(self) -> List[str]:
-        urls = [self.cfg.CLOB_API] + list(getattr(self.cfg, "CLOB_API_FALLBACKS", []) or [])
-        return self._uniq_urls(urls)
-
-    @staticmethod
-    def _uniq_urls(urls: Sequence[str]) -> List[str]:
-        out = []
-        seen = set()
-        for u in urls:
-            if not u:
-                continue
-            v = u.rstrip("/")
-            if v in seen:
-                continue
-            seen.add(v)
-            out.append(v)
-        return out
-
-    def _clob_headers(self) -> Dict:
-        if not self.cfg.POLY_API_KEY:
-            return {}
-        return {
-            "POLY_API_KEY": self.cfg.POLY_API_KEY,
-            "POLY_API_SECRET": self.cfg.POLY_API_SECRET,
-            "POLY_API_PASSPHRASE": self.cfg.POLY_API_PASSPHRASE,
-        }
+        # Separate cache for 15-min markets
+        self._cached_market_15m: Optional[Dict] = None
+        self._cached_market_15m_end_ts: float = 0.0
+        self._cached_market_15m_fetch_ts: float = 0.0
 
     # ------------------------------------------------------------------
     # Lifecycle
     # ------------------------------------------------------------------
 
     async def start(self):
-        timeout = aiohttp.ClientTimeout(total=float(getattr(self.cfg, "POLY_REST_TIMEOUT_SECONDS", 10)))
+        timeout = aiohttp.ClientTimeout(total=float(self.cfg.POLY_REST_TIMEOUT_SECONDS))
         self.session = aiohttp.ClientSession(timeout=timeout)
         self._last_success = time.time()
         self._running = True
-
-        ws_url = getattr(self.cfg, "POLY_WS_URL", "")
-        if ws_url and not self._ws_disabled:
-            self._ws_task = asyncio.create_task(self._ws_loop(ws_url), name="poly-ws")
-
         has_creds = "with API credentials" if self.cfg.POLY_API_KEY else "without credentials"
         log.info(f"PolymarketClient ready ({has_creds})")
 
     async def stop(self):
         self._running = False
-        self._ws_connected = False
-
-        if self._ws_task:
-            self._ws_task.cancel()
-            with contextlib.suppress(asyncio.CancelledError, Exception):
-                await self._ws_task
-            self._ws_task = None
-
         if self.session:
             await self.session.close()
 
     def _ensure_session(self):
         if self.session is None or self.session.closed:
-            timeout = aiohttp.ClientTimeout(total=float(getattr(self.cfg, "POLY_REST_TIMEOUT_SECONDS", 10)))
+            timeout = aiohttp.ClientTimeout(total=float(self.cfg.POLY_REST_TIMEOUT_SECONDS))
             self.session = aiohttp.ClientSession(timeout=timeout)
 
     @property
     def healthy(self) -> bool:
         return (time.time() - self._last_success < 60) or (self._consecutive_errors < 5)
 
-    @property
-    def health_status(self) -> dict:
-        now = time.time()
-        return {
-            "healthy": self.healthy,
-            "last_success": self._last_success,
-            "consecutive_errors": self._consecutive_errors,
-            "ws_connected": self._ws_connected,
-            "ws_last_message_age": (now - self._ws_last_message) if self._ws_last_message else None,
-            "circuit_open": now < self._circuit_open_until,
-            "circuit_open_for": max(0.0, self._circuit_open_until - now),
-            "cached_orderbooks": len(self._orderbook_cache),
-        }
-
     # ------------------------------------------------------------------
-    # REST request resilience
+    # REST resilience
     # ------------------------------------------------------------------
 
     def _circuit_blocked(self) -> bool:
@@ -137,351 +74,420 @@ class PolymarketClient:
 
     def _mark_error(self):
         self._consecutive_errors += 1
-        err_limit = int(getattr(self.cfg, "POLY_CIRCUIT_BREAKER_ERRORS", 5))
-        if self._consecutive_errors >= err_limit:
-            cooldown = float(getattr(self.cfg, "POLY_CIRCUIT_BREAKER_COOLDOWN_SECONDS", 25))
+        if self._consecutive_errors >= self.cfg.POLY_CIRCUIT_BREAKER_ERRORS:
+            cooldown = float(self.cfg.POLY_CIRCUIT_BREAKER_COOLDOWN_SECONDS)
             self._circuit_open_until = time.time() + cooldown
 
     async def _throttle(self):
-        max_rps = float(getattr(self.cfg, "POLY_MAX_REQUESTS_PER_SEC", 25.0))
-        min_interval = 1.0 / max(max_rps, 1.0)
+        min_interval = 1.0 / max(self.cfg.POLY_MAX_REQUESTS_PER_SEC, 1.0)
         now = time.time()
         wait = self._last_rest_request_ts + min_interval - now
         if wait > 0:
             await asyncio.sleep(wait)
         self._last_rest_request_ts = time.time()
 
-    async def _request_json(
-        self,
-        bases: Sequence[str],
-        path: str,
-        params: dict = None,
-        headers: dict = None,
-    ) -> Optional[dict]:
+    async def _request_json(self, path: str, params: dict = None):
+        """GET request to Gamma API. Returns parsed JSON or None."""
         self._ensure_session()
-
         if not path.startswith("/"):
             path = "/" + path
 
-        max_attempts = int(getattr(self.cfg, "POLY_RETRY_MAX_ATTEMPTS", 3))
-        headers = headers or {}
+        base = self.cfg.GAMMA_API.rstrip("/")
+        max_attempts = self.cfg.POLY_RETRY_MAX_ATTEMPTS
 
         for attempt in range(max_attempts):
             if self._circuit_blocked():
                 await asyncio.sleep(max(0.1, self._circuit_open_until - time.time()))
 
-            for base in bases:
-                await self._throttle()
-                url = base + path
-                try:
-                    async with self.session.get(url, params=params, headers=headers) as r:
-                        if r.status == 200:
-                            data = await r.json()
-                            self._mark_success()
-                            return data
-
-                        # Retry-friendly statuses.
-                        if r.status in (429, 500, 502, 503, 504):
-                            self._mark_error()
-                            continue
-
-                        # Non-retryable HTTP statuses.
-                        self._mark_error()
+            await self._throttle()
+            url = base + path
+            try:
+                async with self.session.get(url, params=params) as r:
+                    if r.status == 200:
+                        data = await r.json()
+                        self._mark_success()
+                        return data
+                    self._mark_error()
+                    if r.status not in (429, 500, 502, 503, 504):
                         text = await r.text()
                         log.warning(f"Polymarket HTTP {r.status} {url}: {text[:200]}")
-                        continue
-                except Exception as exc:
-                    self._mark_error()
-                    log.warning(f"Polymarket request failed {url}: {exc}")
-                    continue
+            except Exception as exc:
+                self._mark_error()
+                log.warning(f"Polymarket request failed {url}: {exc}")
 
             if attempt < max_attempts - 1:
                 await asyncio.sleep(0.15 * (2 ** attempt))
 
         return None
 
+    async def _clob_request_json(self, path: str, params: dict = None) -> Optional[dict]:
+        """GET request to CLOB API (for orderbook)."""
+        self._ensure_session()
+        if not path.startswith("/"):
+            path = "/" + path
+
+        base = self.cfg.CLOB_API.rstrip("/")
+        await self._throttle()
+        url = base + path
+        try:
+            async with self.session.get(url, params=params) as r:
+                if r.status == 200:
+                    data = await r.json()
+                    self._mark_success()
+                    return data
+                self._mark_error()
+        except Exception as exc:
+            self._mark_error()
+            log.warning(f"CLOB request failed {url}: {exc}")
+        return None
+
     # ------------------------------------------------------------------
-    # Market discovery
+    # BTC 5-min market discovery
     # ------------------------------------------------------------------
 
-    async def get_markets(self, keyword: str, limit: int = 50) -> List[Dict]:
-        data = await self._request_json(
-            self._gamma_bases,
-            "/markets",
-            params={"active": "true", "closed": "false", "limit": limit},
-        )
-        if not data:
-            return []
+    async def find_active_btc_5min_market(self) -> Optional[Dict]:
+        """
+        Find the currently active "Bitcoin Up or Down" 5-minute market.
 
-        out = []
-        for raw in data:
-            question = (raw.get("question") or "").lower()
-            if keyword.lower() in question:
-                out.append(self._parse(raw))
-        return out
+        Discovery strategy (in order):
+        1. Return cached market if still valid AND recently updated (3s TTL)
+        2. If market exists but cache is stale, refresh prices only
+        3. Try direct slug lookup for new market
+        4. Fallback: search recent events
+        """
+        now = time.time()
+        CACHE_TTL = 3.0  # Refresh prices every 3 seconds
 
-    async def get_crypto_markets(self) -> List[Dict]:
-        all_m = []
-        for kw in self.cfg.CRYPTO_MARKETS:
-            all_m.extend(await self.get_markets(kw))
-            await asyncio.sleep(0.05)
-        all_m = self._dedupe_by_id(all_m)
-        if all_m:
-            return all_m
+        # 1. Check cache with TTL - if we have recent data, refresh prices
+        if self._cached_market and self._cached_market_end_ts > now + 10:
+            # Market is still active, check if cache is stale
+            if now - self._cached_market_fetch_ts > CACHE_TTL:
+                # Cache stale - refresh prices only
+                market_id = self._cached_market.get("id")
+                if market_id:
+                    fresh = await self.get_market_by_id(market_id)
+                    if fresh:
+                        # Keep market ID and end time, update prices
+                        fresh["id"] = market_id
+                        fresh["end_date_ts"] = self._cached_market_end_ts
+                        self._cached_market = fresh
+                        self._cached_market_fetch_ts = now
+                        log.debug(f"Cache refreshed: UP={fresh.get('up_price')} DOWN={fresh.get('down_price')}")
+                        return fresh
+            return self._cached_market
 
-        # Fallback discovery: keyword drift is common on Polymarket.
-        fallback_terms = [
-            "bitcoin", "btc",
-            "ethereum", "eth",
-            "solana", "sol",
-            "dogecoin", "doge",
-            "xrp", "cardano", "ada",
-            "up or down", "price",
-        ]
-        data = await self._request_json(
-            self._gamma_bases,
-            "/markets",
-            params={"active": "true", "closed": "false", "limit": 250},
-        )
-        if not data:
-            return []
+        # Cache miss - do full discovery
+        self._cached_market = None
+        self._cached_market_end_ts = 0.0
 
-        out = []
-        for raw in data:
-            q = (raw.get("question") or "").lower()
-            if any(t in q for t in fallback_terms):
-                out.append(self._parse(raw))
-        return self._dedupe_by_id(out)
+        # 2. Try direct slug lookup (fast path - single API call)
+        market = await self._try_slug_discovery(now)
+        if market:
+            self._cached_market = market
+            self._cached_market_end_ts = market.get("end_date_ts", 0)
+            self._cached_market_fetch_ts = now
+            return market
 
-    async def get_weather_markets(self) -> List[Dict]:
-        keywords = ["highest temperature", "lowest temperature"]
-        data = await self._request_json(
-            self._gamma_bases,
-            "/markets",
-            params={"active": "true", "closed": "false", "limit": 100},
-        )
-        if not data:
-            return []
+        # 3. Fallback: search recent events
+        market = await self._try_events_discovery(now)
+        if market:
+            self._cached_market = market
+            self._cached_market_end_ts = market.get("end_date_ts", 0)
+            self._cached_market_fetch_ts = now
+            return market
 
-        out = []
-        for raw in data:
-            q = (raw.get("question") or "").lower()
-            if any(k in q for k in keywords):
-                out.append(self._parse(raw))
-        return self._dedupe_by_id(out)
+        return None
 
-    @staticmethod
-    def _dedupe_by_id(markets: Sequence[Dict]) -> List[Dict]:
-        seen = set()
-        out = []
-        for m in markets:
-            mid = m.get("id")
-            if not mid or mid in seen:
+    async def _try_slug_discovery(self, now: float, window_seconds: int = 300, label: str = "5m") -> Optional[Dict]:
+        """
+        Try to find a market by constructing its slug directly.
+        Slug pattern: btc-updown-{label}-{unix_start_time}
+        where unix_start_time is rounded down to nearest window_seconds.
+        """
+        current_window_start = int(now) - (int(now) % window_seconds)
+
+        # Try current window and next window (market might be created early)
+        for offset in [0, window_seconds, -window_seconds]:
+            window_start = current_window_start + offset
+            window_end = window_start + window_seconds
+            remaining = window_end - now
+
+            # Skip windows that have already ended or are too far away
+            if remaining < 10 or remaining > window_seconds * 2:
                 continue
-            seen.add(mid)
-            out.append(m)
-        return out
+
+            slug = f"btc-updown-{label}-{window_start}"
+            data = await self._request_json(f"/events/slug/{slug}")
+
+            if not data:
+                continue
+
+            # Event found - extract the market from it
+            markets = data.get("markets", [])
+            if not markets:
+                continue
+
+            raw_market = markets[0]
+            parsed = self._parse_market(raw_market)
+            if parsed and parsed.get("end_date_ts"):
+                end_ts = parsed["end_date_ts"]
+                if end_ts > now + 10:
+                    log.info(f"Found {label} market via slug: {parsed['question']} "
+                             f"(ends in {int(end_ts - now)}s)")
+                    return parsed
+
+        return None
+
+    async def _try_events_discovery(self, now: float, slug_prefix: str = "btc-updown-5m-") -> Optional[Dict]:
+        """
+        Fallback: search recent events endpoint for BTC markets.
+        This handles cases where the slug pattern might change or
+        markets aren't aligned to exact boundaries.
+        """
+        data = await self._request_json(
+            "/events",
+            params={
+                "closed": "false",
+                "order": "startDate",
+                "ascending": "false",
+                "limit": 20,
+            },
+        )
+        if not data:
+            return None
+
+        best = None
+        best_end = None
+
+        for event in data:
+            slug = event.get("slug", "")
+            if not slug.startswith(slug_prefix):
+                continue
+
+            markets = event.get("markets", [])
+            if not markets:
+                continue
+
+            raw_market = markets[0]
+            parsed = self._parse_market(raw_market)
+            if not parsed:
+                continue
+
+            end_ts = parsed.get("end_date_ts")
+            if not end_ts:
+                continue
+
+            remaining = end_ts - now
+            if remaining < 10:
+                continue
+
+            # Prefer the soonest-ending active market
+            if best is None or end_ts < best_end:
+                best = parsed
+                best_end = end_ts
+
+        if best:
+            log.info(f"Found market via events search: {best['question']} "
+                     f"(ends in {int(best_end - now)}s)")
+        return best
 
     # ------------------------------------------------------------------
-    # Orderbook (WS cache + REST fallback)
+    # BTC 15-min market discovery
     # ------------------------------------------------------------------
 
-    async def subscribe_orderbooks(self, token_ids: Sequence[str]):
-        if not token_ids:
-            return
-        async with self._subscription_lock:
-            for t in token_ids:
-                if t:
-                    self._subscribed_tokens.add(str(t))
+    async def find_active_btc_15min_market(self) -> Optional[Dict]:
+        """
+        Find the currently active "Bitcoin Up or Down" 15-minute market.
+        Same logic as 5-min but with 900s window and separate cache.
+        """
+        now = time.time()
+        CACHE_TTL = 3.0
 
-    def _orderbook_from_cache(self, token_id: str, max_age_ms: Optional[int] = None) -> Optional[dict]:
-        max_age_ms = int(max_age_ms or getattr(self.cfg, "POLY_ORDERBOOK_STALE_MS", 1200))
-        item = self._orderbook_cache.get(str(token_id))
-        if not item:
-            return None
-        age_ms = (time.time() - item.get("ts", 0)) * 1000.0
-        if age_ms > max_age_ms:
-            return None
-        return item.get("book")
+        # 1. Check cache with TTL
+        if self._cached_market_15m and self._cached_market_15m_end_ts > now + 10:
+            if now - self._cached_market_15m_fetch_ts > CACHE_TTL:
+                market_id = self._cached_market_15m.get("id")
+                if market_id:
+                    fresh = await self.get_market_by_id(market_id)
+                    if fresh:
+                        fresh["id"] = market_id
+                        fresh["end_date_ts"] = self._cached_market_15m_end_ts
+                        self._cached_market_15m = fresh
+                        self._cached_market_15m_fetch_ts = now
+                        return fresh
+            return self._cached_market_15m
+
+        # Cache miss - full discovery
+        self._cached_market_15m = None
+        self._cached_market_15m_end_ts = 0.0
+
+        # 2. Try direct slug lookup (15m pattern)
+        market = await self._try_slug_discovery(now, window_seconds=900, label="15m")
+        if market:
+            self._cached_market_15m = market
+            self._cached_market_15m_end_ts = market.get("end_date_ts", 0)
+            self._cached_market_15m_fetch_ts = now
+            return market
+
+        # 3. Fallback: search events
+        market = await self._try_events_discovery(now, slug_prefix="btc-updown-15m-")
+        if market:
+            self._cached_market_15m = market
+            self._cached_market_15m_end_ts = market.get("end_date_ts", 0)
+            self._cached_market_15m_fetch_ts = now
+            return market
+
+        return None
+
+    # ------------------------------------------------------------------
+    # Market Data
+    # ------------------------------------------------------------------
+    
+    async def get_market_by_id(self, market_id: str) -> Optional[Dict]:
+        """
+        Fetch fresh market data by ID from Polymarket API.
+        Returns updated prices using _parse_market for correct Up/Down mapping.
+        """
+        try:
+            data = await self._request_json(f"/markets/{market_id}")
+            if data:
+                # Use _parse_market for correct price extraction
+                return self._parse_market(data)
+        except Exception as e:
+            log.warning(f"Failed to fetch market {market_id}: {e}")
+        return None
+
+    # ------------------------------------------------------------------
+    # Orderbook
+    # ------------------------------------------------------------------
 
     async def get_orderbook(self, token_id: str) -> Optional[Dict]:
-        token_id = str(token_id)
-
-        cached = self._orderbook_from_cache(token_id)
-        if cached is not None:
-            return cached
-
-        # Keep WS subscriptions warm even when REST is used.
-        await self.subscribe_orderbooks([token_id])
-
-        book = await self._request_json(
-            self._clob_bases,
+        """Fetch orderbook for a token from CLOB API."""
+        return await self._clob_request_json(
             "/book",
             params={"token_id": token_id},
-            headers=self._clob_headers(),
         )
-        if book:
-            self._orderbook_cache[token_id] = {
-                "book": book,
-                "ts": time.time(),
-                "latency_ms": None,
-                "source": "rest",
-            }
-        return book
 
-    async def orderbook_snapshot(self, token_id: str, max_age_ms: Optional[int] = None) -> Optional[Dict]:
-        token_id = str(token_id)
-        cached = self._orderbook_from_cache(token_id, max_age_ms=max_age_ms)
-        if cached is not None:
-            return cached
-        return await self.get_orderbook(token_id)
-
-    def orderbook_latency_ms(self, token_id: str) -> Optional[float]:
-        item = self._orderbook_cache.get(str(token_id))
-        if not item:
+    def get_implied_probability(self, orderbook: Dict, side: str = "buy") -> Optional[float]:
+        """
+        Extract implied probability from orderbook.
+        For buying: best ask = cheapest price to buy YES token.
+        For selling: best bid = highest price someone will pay for YES token.
+        """
+        if not orderbook:
             return None
-        lat = item.get("latency_ms")
-        if lat is not None:
-            return lat
-        return (time.time() - item.get("ts", 0)) * 1000.0
 
-    # ------------------------------------------------------------------
-    # WebSocket loop
-    # ------------------------------------------------------------------
+        if side == "buy":
+            asks = orderbook.get("asks", [])
+            if asks:
+                best = min(float(a.get("price", 1.0)) for a in asks)
+                return best
+        else:
+            bids = orderbook.get("bids", [])
+            if bids:
+                best = max(float(b.get("price", 0.0)) for b in bids)
+                return best
+        return None
 
-    async def _ws_loop(self, ws_url: str):
-        delay = 1.0
+    def get_orderbook_metrics(self, orderbook: dict) -> Optional[dict]:
+        """Order book'tan execution metrikler. PDF s.21: OBI, liquidity depth, spread."""
+        if not orderbook:
+            return None
 
-        while self._running:
-            try:
-                self._ensure_session()
-                async with self.session.ws_connect(ws_url, heartbeat=20) as ws:
-                    self._ws_connected = True
-                    delay = 1.0
-                    log.info("Polymarket WS connected")
+        bids = orderbook.get("bids", [])
+        asks = orderbook.get("asks", [])
+        if not bids or not asks:
+            return None
 
-                    await self._send_ws_subscriptions(ws)
+        best_bid = max(float(b.get("price", 0)) for b in bids)
+        best_ask = min(float(a.get("price", 1)) for a in asks)
+        midpoint = (best_bid + best_ask) / 2.0
+        spread = best_ask - best_bid
 
-                    while self._running:
-                        # Refresh subscriptions periodically (new tokens may be added).
-                        await self._send_ws_subscriptions(ws)
+        # Top 5 depth
+        sorted_bids = sorted(bids, key=lambda x: float(x.get("price", 0)), reverse=True)[:5]
+        sorted_asks = sorted(asks, key=lambda x: float(x.get("price", 0)))[:5]
 
-                        msg = await ws.receive(timeout=1.0)
-                        if msg.type == aiohttp.WSMsgType.TEXT:
-                            self._ws_last_message = time.time()
-                            self._handle_ws_message(msg.data)
-                        elif msg.type == aiohttp.WSMsgType.BINARY:
-                            self._ws_last_message = time.time()
-                        elif msg.type in (aiohttp.WSMsgType.CLOSE, aiohttp.WSMsgType.CLOSED, aiohttp.WSMsgType.ERROR):
-                            break
-            except asyncio.TimeoutError:
-                continue
-            except asyncio.CancelledError:
-                break
-            except Exception as exc:
-                log.warning(f"Polymarket WS error: {exc}")
-                if "Invalid response status" in str(exc):
-                    # Endpoint/version mismatch; keep running with REST fallback.
-                    self._ws_disabled = True
-                    log.warning("Polymarket WS disabled due to unsupported endpoint; using REST fallback")
-                    break
-            finally:
-                self._ws_connected = False
+        bid_depth = sum(float(b.get("price", 0)) * float(b.get("size", 0)) for b in sorted_bids)
+        ask_depth = sum(float(a.get("price", 0)) * float(a.get("size", 0)) for a in sorted_asks)
 
-            if self._running:
-                await asyncio.sleep(delay)
-                delay = min(delay * 1.8, 15.0)
+        total_depth = bid_depth + ask_depth
+        imbalance = (bid_depth - ask_depth) / total_depth if total_depth > 0 else 0.0
 
-    async def _send_ws_subscriptions(self, ws):
-        async with self._subscription_lock:
-            tokens = list(self._subscribed_tokens)
-
-        if not tokens:
-            return
-
-        # The feed has changed payload schema over time; send compatible variants.
-        payload_variants = [
-            {"type": "subscribe", "channel": "book", "asset_ids": tokens},
-            {"type": "subscribe", "channel": "book", "assets_ids": tokens},
-            {"event": "subscribe", "channel": "book", "asset_ids": tokens},
-        ]
-
-        for payload in payload_variants:
-            try:
-                await ws.send_json(payload)
-            except Exception:
-                # Non-fatal; next variant may still work.
-                continue
-
-    def _handle_ws_message(self, raw: str):
-        try:
-            data = json.loads(raw)
-        except Exception:
-            return
-
-        token_id, book, msg_ts = self._extract_orderbook(data)
-        if not token_id or not book:
-            return
-
-        now = time.time()
-        latency_ms = None
-        if msg_ts:
-            latency_ms = max(0.0, (now - msg_ts) * 1000.0)
-
-        self._orderbook_cache[str(token_id)] = {
-            "book": book,
-            "ts": now,
-            "latency_ms": latency_ms,
-            "source": "ws",
+        return {
+            "midpoint": midpoint,
+            "spread": spread,
+            "spread_pct": spread / midpoint if midpoint > 0 else 0,
+            "bid_depth_usd": bid_depth,
+            "ask_depth_usd": ask_depth,
+            "imbalance": imbalance,
         }
 
-    def _extract_orderbook(self, payload: dict) -> Tuple[Optional[str], Optional[dict], Optional[float]]:
-        candidates = [payload]
-
-        data = payload.get("data") if isinstance(payload, dict) else None
-        if isinstance(data, dict):
-            candidates.append(data)
-        elif isinstance(data, list):
-            candidates.extend([d for d in data if isinstance(d, dict)])
-
-        for c in candidates:
-            token_id = (
-                c.get("asset_id")
-                or c.get("token_id")
-                or c.get("assetId")
-                or c.get("tokenId")
+    def simulate_fill(self, orderbook: dict, side: str, size_usd: float) -> dict:
+        """PDF s.32: VWAP fill simulation.
+        Order book levels'i iterate ederek gercek fill fiyatini hesapla."""
+        # side: "buy" -> consume asks, "sell" -> consume bids
+        if side == "buy":
+            levels = sorted(
+                orderbook.get("asks", []),
+                key=lambda x: float(x.get("price", 0)),
             )
-            bids = c.get("bids")
-            asks = c.get("asks")
-            if token_id and isinstance(bids, list) and isinstance(asks, list):
-                ts = self._extract_ts_seconds(c)
-                return str(token_id), {"bids": bids, "asks": asks}, ts
+        else:
+            levels = sorted(
+                orderbook.get("bids", []),
+                key=lambda x: float(x.get("price", 0)),
+                reverse=True,
+            )
 
-        return None, None, None
+        remaining = size_usd
+        total_cost = 0.0
+        total_shares = 0.0
+        levels_consumed = 0
 
-    @staticmethod
-    def _extract_ts_seconds(payload: dict) -> Optional[float]:
-        for key in ("timestamp", "ts", "time"):
-            v = payload.get(key)
-            if v is None:
+        for level in levels:
+            price = float(level.get("price", 0))
+            size = float(level.get("size", 0))
+            if price <= 0 or size <= 0:
                 continue
-            try:
-                f = float(v)
-            except Exception:
-                continue
-            # Heuristic: ms epoch.
-            if f > 2_000_000_000_000:
-                return f / 1000.0
-            # sec epoch.
-            if f > 2_000_000_000:
-                return f
-        return None
+
+            level_usd = price * size
+            if level_usd >= remaining:
+                shares_needed = remaining / price
+                total_cost += shares_needed * price
+                total_shares += shares_needed
+                remaining = 0
+                levels_consumed += 1
+                break
+            else:
+                total_cost += level_usd
+                total_shares += size
+                remaining -= level_usd
+                levels_consumed += 1
+
+        filled_usd = size_usd - remaining
+        vwap = total_cost / total_shares if total_shares > 0 else 0.0
+
+        # Midpoint for slippage calc
+        bids = orderbook.get("bids", [])
+        asks = orderbook.get("asks", [])
+        best_bid = max((float(b.get("price", 0)) for b in bids), default=0)
+        best_ask = min((float(a.get("price", 1)) for a in asks), default=1)
+        midpoint = (best_bid + best_ask) / 2.0
+
+        return {
+            "vwap_price": vwap,
+            "slippage_vs_mid": vwap - midpoint if side == "buy" else midpoint - vwap,
+            "total_filled_usd": filled_usd,
+            "levels_consumed": levels_consumed,
+            "partial_fill": remaining > 0,
+        }
 
     # ------------------------------------------------------------------
     # Parse helper
     # ------------------------------------------------------------------
 
-    def _parse(self, raw: Dict) -> Dict:
+    def _parse_market(self, raw: Dict) -> Optional[Dict]:
+        """Parse a raw market dict from Gamma API into our standard format."""
         prices = raw.get("outcomePrices", [])
         if isinstance(prices, str):
             try:
@@ -496,18 +502,91 @@ class PolymarketClient:
             except (json.JSONDecodeError, ValueError):
                 tokens = []
 
+        outcomes = raw.get("outcomes", [])
+        if isinstance(outcomes, str):
+            try:
+                outcomes = json.loads(outcomes)
+            except (json.JSONDecodeError, ValueError):
+                outcomes = []
+
+        if len(tokens) < 2 or len(outcomes) < 2:
+            return None
+
         yes_p = float(prices[0]) if len(prices) > 0 else 0.0
         no_p = float(prices[1]) if len(prices) > 1 else 0.0
 
+        # Parse end date and event start time
+        end_date_str = raw.get("endDate", "")
+        end_date_ts = self._parse_iso_ts(end_date_str)
+
+        start_time_str = raw.get("eventStartTime", "")
+        start_date_ts = self._parse_iso_ts(start_time_str)
+
+        # Identify "Up" and "Down" tokens from outcomes
+        up_token = None
+        down_token = None
+        up_price = 0.0
+        down_price = 0.0
+
+        for i, outcome in enumerate(outcomes):
+            outcome_lower = str(outcome).lower()
+            if "up" in outcome_lower and i < len(tokens):
+                up_token = tokens[i]
+                up_price = float(prices[i]) if i < len(prices) else 0.0
+            elif "down" in outcome_lower and i < len(tokens):
+                down_token = tokens[i]
+                down_price = float(prices[i]) if i < len(prices) else 0.0
+
+        # Fallback: first = Up, second = Down (Polymarket convention)
+        if not up_token:
+            up_token = tokens[0]
+            up_price = yes_p
+            down_token = tokens[1]
+            down_price = no_p
+
         return {
             "id": raw.get("id", ""),
+            "condition_id": raw.get("conditionId", ""),
             "question": raw.get("question", ""),
             "slug": raw.get("slug", ""),
+            "outcomes": outcomes,
+            "up_price": up_price,
+            "down_price": down_price,
+            "up_token": up_token,
+            "down_token": down_token,
             "yes_price": yes_p,
             "no_price": no_p,
             "volume": float(raw.get("volume", 0)),
             "liquidity": float(raw.get("liquidity", 0)),
-            "end_date": raw.get("endDate", ""),
+            "end_date": end_date_str,
+            "end_date_ts": end_date_ts,
+            "start_date": start_time_str,
+            "start_date_ts": start_date_ts,
             "token_ids": tokens,
-            "resolution_source": raw.get("resolutionSource", ""),
+            "fees_enabled": raw.get("feesEnabled", True),
+            "enable_order_book": raw.get("enableOrderBook", True),
         }
+
+    @staticmethod
+    def _parse_iso_ts(s: str) -> Optional[float]:
+        if not s:
+            return None
+        try:
+            dt = datetime.fromisoformat(s.replace("Z", "+00:00"))
+            return dt.timestamp()
+        except Exception:
+            return None
+
+    # ------------------------------------------------------------------
+    # Dynamic fee calculation
+    # ------------------------------------------------------------------
+
+    @staticmethod
+    def calculate_dynamic_fee(price: float) -> float:
+        """
+        Polymarket dynamic fee: max ~3.15% at 50c, scales down towards 0/100c.
+        fee = price * (1 - price) * 0.0222 * 2
+        """
+        if price <= 0 or price >= 1:
+            return 0.0
+        return price * (1 - price) * 0.0444

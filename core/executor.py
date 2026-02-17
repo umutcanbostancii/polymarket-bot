@@ -1,9 +1,8 @@
-"""Trade execution layer with paper-mode atomic multi-leg simulation."""
+"""Trade execution for BTC 5-min directional bets. Paper + live mode."""
 
 import logging
 import time
-import uuid
-from typing import Dict, List, Optional
+from typing import Optional
 
 log = logging.getLogger(__name__)
 
@@ -13,175 +12,194 @@ class Executor:
     def __init__(self, config, db):
         self.cfg = config
         self.db = db
+        self._clob_client = None
 
-    async def execute(
+    def _get_clob_client(self):
+        """Lazy-init py-clob-client for live trading."""
+        if self._clob_client is not None:
+            return self._clob_client
+
+        if not self.cfg.POLY_PRIVATE_KEY:
+            return None
+
+        try:
+            from py_clob_client.client import ClobClient
+            self._clob_client = ClobClient(
+                self.cfg.CLOB_API,
+                key=self.cfg.POLY_PRIVATE_KEY,
+                chain_id=137,
+            )
+            # Derive or use existing API creds
+            if self.cfg.POLY_API_KEY:
+                from py_clob_client.clob_types import ApiCreds
+                self._clob_client.set_api_creds(ApiCreds(
+                    api_key=self.cfg.POLY_API_KEY,
+                    api_secret=self.cfg.POLY_API_SECRET,
+                    api_passphrase=self.cfg.POLY_API_PASSPHRASE,
+                ))
+            else:
+                self._clob_client.create_or_derive_api_creds()
+            log.info("CLOB client initialized for live trading")
+            return self._clob_client
+        except Exception as e:
+            log.error(f"Failed to init CLOB client: {e}")
+            return None
+
+    async def execute_directional_bet(
         self,
-        strategy: str,
         market: dict,
+        direction: str,
+        size_usd: float,
+        edge: float = 0.0,
+        notes: str = "",
+        fill_quality: float = 0.0,
+        latency_ms: float = 0.0,
+        strategy_name: str = "btc_5min_fast",
+    ) -> Optional[int]:
+        """
+        Place a directional bet on Up or Down.
+
+        Args:
+            market: parsed market dict with up_token, down_token, up_price, down_price
+            direction: "up" or "down"
+            size_usd: amount in USDC
+            edge: calculated edge for logging
+            notes: extra notes
+
+        Returns:
+            trade_id from DB, or None on failure
+        """
+        if direction == "up":
+            token_id = market.get("up_token")
+            price = market.get("up_price", 0.5)
+            side = "BUY_UP"
+        elif direction == "down":
+            token_id = market.get("down_token")
+            price = market.get("down_price", 0.5)
+            side = "BUY_DOWN"
+        else:
+            log.error(f"Invalid direction: {direction}")
+            return None
+
+        if not token_id:
+            log.error(f"No token_id for direction={direction}")
+            return None
+
+        if price <= 0 or price >= 1:
+            log.error(f"Invalid price={price} for {direction}")
+            return None
+
+        import math
+        shares = math.ceil(size_usd / price * 100) / 100  # yukarı yuvarla, min $1 notional
+        question = market.get("question", "")[:120]
+
+        if self.cfg.PAPER_TRADING:
+            # Paper mode: just log to DB
+            tid = self.db.log_trade(
+                strategy=strategy_name,
+                market_id=market.get("id", ""),
+                question=question,
+                side=side,
+                price=price,
+                size=shares,
+                is_paper=True,
+                notes=notes,
+                predicted_edge=edge,
+                decision_reason=f"direction={direction} edge={edge:.4f}",
+                entry_latency_ms=latency_ms,
+            )
+            # Log execution audit with fill quality
+            self.db.log_execution_audit(
+                strategy=strategy_name,
+                market_id=market.get("id", ""),
+                side=side,
+                status="filled",
+                requested_notional=size_usd,
+                filled_notional=size_usd,
+                fill_ratio=1.0,
+                actual_latency_ms=latency_ms,
+                estimated_fee_usd=0.0,
+                meta={"fill_quality": fill_quality, "paper": True},
+            )
+            log.info(
+                f"PAPER BET: {side} ${size_usd:.2f} @ {price:.4f} "
+                f"edge={edge:.4f} fq={fill_quality:.2f} lat={latency_ms:.0f}ms"
+            )
+            return tid
+        else:
+            # Live mode: use py-clob-client
+            return await self._execute_live(
+                market=market,
+                token_id=token_id,
+                side=side,
+                price=price,
+                size_usd=size_usd,
+                shares=shares,
+                edge=edge,
+                question=question,
+                direction=direction,
+                notes=notes,
+            )
+
+    async def _execute_live(
+        self,
+        market: dict,
+        token_id: str,
         side: str,
         price: float,
         size_usd: float,
-        notes: str = "",
-        **trade_meta,
-    ):
-        """
-        Execute a single leg.
-        Paper mode logs to DB. Live mode is intentionally disabled in this project.
-        """
-        if not self.cfg.PAPER_TRADING:
-            raise NotImplementedError(
-                "Live trading not implemented. Set PAPER_TRADING=True in config."
+        shares: float,
+        edge: float,
+        question: str,
+        direction: str,
+        notes: str,
+    ) -> Optional[int]:
+        """Execute a live order via py-clob-client."""
+        client = self._get_clob_client()
+        if not client:
+            log.error("Live trading requested but CLOB client not available")
+            return None
+
+        try:
+            from py_clob_client.order_builder.constants import BUY
+            from py_clob_client.clob_types import OrderArgs
+
+            order_args = OrderArgs(
+                token_id=token_id,
+                price=price,
+                size=shares,
+                side=BUY,
             )
+            order = client.create_order(order_args)
+            result = client.post_order(order)
 
-        shares = size_usd / price if price > 0 else 0.0
-        question = market.get("question", "")[:120]
+            success = bool(result and result.get("success"))
+            order_id = result.get("orderID", "") if result else ""
 
-        tid = self.db.log_trade(
-            strategy=strategy,
-            market_id=market.get("id", ""),
-            question=question,
-            side=side,
-            price=price,
-            size=shares,
-            is_paper=True,
-            notes=notes,
-            **trade_meta,
-        )
-        log.info(
-            f"PAPER EXEC: {strategy} | {side} notional=${size_usd:.2f} "
-            f"price={price:.6f} market={market.get('id','')}"
-        )
-        return tid
-
-    async def execute_atomic_legs(
-        self,
-        strategy: str,
-        market: dict,
-        legs: List[Dict],
-        symbol: str = "",
-        execution_id: str = "",
-        meta: Optional[dict] = None,
-    ) -> dict:
-        """
-        Simulate atomic multi-leg execution.
-
-        Returns:
-            {
-                "ok": bool,
-                "execution_id": str,
-                "trade_ids": [int],
-                "fill_ratio": float,
-                "latency_ms": float,
-                "reject_reason": str,
-            }
-        """
-        if not legs:
-            return {
-                "ok": False,
-                "execution_id": execution_id or "",
-                "trade_ids": [],
-                "fill_ratio": 0.0,
-                "latency_ms": 0.0,
-                "reject_reason": "no_legs",
-            }
-
-        meta = meta or {}
-        execution_id = execution_id or str(uuid.uuid4())
-
-        requested_notional = sum(max(0.0, float(l.get("size_usd", 0.0))) for l in legs)
-        est_latency_ms = float(meta.get("estimated_latency_ms", 0.0) or 0.0)
-        fill_prob = float(meta.get("fill_prob", 1.0) or 1.0)
-        fill_prob = max(0.0, min(fill_prob, 1.0))
-
-        min_fill_prob = float(getattr(self.cfg, "POLY_MIN_FILL_PROB", 0.75))
-        if fill_prob < min_fill_prob:
-            self.db.log_execution_audit(
-                strategy=strategy,
-                execution_id=execution_id,
+            tid = self.db.log_trade(
+                strategy="btc_5min_fast",
                 market_id=market.get("id", ""),
-                side="+".join(str(l.get("side", "")) for l in legs),
-                symbol=symbol,
-                status="rejected",
-                requested_notional=requested_notional,
-                filled_notional=0.0,
-                fill_ratio=0.0,
-                estimated_latency_ms=est_latency_ms,
-                actual_latency_ms=0.0,
-                estimated_fee_usd=float(meta.get("expected_fee_usd", 0.0) or 0.0),
-                estimated_slippage_usd=float(meta.get("expected_slippage_usd", 0.0) or 0.0),
-                estimated_gas_usd=float(meta.get("expected_gas_usd", 0.0) or 0.0),
-                reject_reason="fill_prob_below_threshold",
-                meta={**meta, "fill_prob": fill_prob},
+                question=question,
+                side=side,
+                price=price,
+                size=shares,
+                is_paper=False,
+                notes=f"{notes} order_id={order_id}",
+                predicted_edge=edge,
+                decision_reason=f"LIVE direction={direction} edge={edge:.4f}",
+                execution_id=order_id,
             )
-            return {
-                "ok": False,
-                "execution_id": execution_id,
-                "trade_ids": [],
-                "fill_ratio": 0.0,
-                "latency_ms": 0.0,
-                "reject_reason": "fill_prob_below_threshold",
-            }
 
-        start = time.time()
-        trade_ids = []
+            if success:
+                log.info(
+                    f"LIVE BET: {side} ${size_usd:.2f} @ {price:.4f} "
+                    f"edge={edge:.4f} order={order_id}"
+                )
+            else:
+                log.warning(f"LIVE BET may have failed: {result}")
 
-        # Paper-mode approximation: if fill_prob passes threshold we fill atomically.
-        actual_fill_ratio = 1.0
+            return tid
 
-        for leg in legs:
-            leg_side = str(leg.get("side", ""))
-            leg_price = float(leg.get("price", 0.0) or 0.0)
-            leg_notional = float(leg.get("size_usd", 0.0) or 0.0)
-            leg_notes = str(leg.get("notes", ""))
-            leg_market = leg.get("market") or market
-
-            tid = await self.execute(
-                strategy=strategy,
-                market=leg_market,
-                side=leg_side,
-                price=leg_price,
-                size_usd=leg_notional,
-                notes=leg_notes,
-                expected_fee_usd=float(leg.get("expected_fee_usd", 0.0) or 0.0),
-                expected_slippage_usd=float(leg.get("expected_slippage_usd", 0.0) or 0.0),
-                expected_net_usd=float(leg.get("expected_net_usd", 0.0) or 0.0),
-                expected_net_pct=float(leg.get("expected_net_pct", 0.0) or 0.0),
-                predicted_edge=float(leg.get("predicted_edge", 0.0) or 0.0),
-                model_version=str(leg.get("model_version", "") or ""),
-                decision_reason=str(leg.get("decision_reason", "") or ""),
-                expected_gas_usd=float(leg.get("expected_gas_usd", 0.0) or 0.0),
-                entry_latency_ms=est_latency_ms,
-                fill_ratio=actual_fill_ratio,
-                reject_reason="",
-                execution_id=execution_id,
-            )
-            trade_ids.append(tid)
-
-        latency_ms = max(0.0, (time.time() - start) * 1000.0)
-        self.db.log_execution_audit(
-            strategy=strategy,
-            execution_id=execution_id,
-            market_id=market.get("id", ""),
-            side="+".join(str(l.get("side", "")) for l in legs),
-            symbol=symbol,
-            status="filled",
-            requested_notional=requested_notional,
-            filled_notional=requested_notional,
-            fill_ratio=actual_fill_ratio,
-            estimated_latency_ms=est_latency_ms,
-            actual_latency_ms=latency_ms,
-            estimated_fee_usd=float(meta.get("expected_fee_usd", 0.0) or 0.0),
-            estimated_slippage_usd=float(meta.get("expected_slippage_usd", 0.0) or 0.0),
-            estimated_gas_usd=float(meta.get("expected_gas_usd", 0.0) or 0.0),
-            reject_reason="",
-            meta={**meta, "fill_prob": fill_prob, "legs": len(legs)},
-        )
-
-        return {
-            "ok": True,
-            "execution_id": execution_id,
-            "trade_ids": trade_ids,
-            "fill_ratio": actual_fill_ratio,
-            "latency_ms": latency_ms,
-            "reject_reason": "",
-        }
+        except Exception as e:
+            log.error(f"Live execution error: {e}", exc_info=True)
+            return None

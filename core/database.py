@@ -5,7 +5,7 @@ import logging
 import sqlite3
 from datetime import datetime, timezone
 from statistics import median
-from typing import Iterable, List, Sequence, Tuple, Union
+from typing import Iterable, List, Optional, Sequence, Tuple, Union
 
 log = logging.getLogger(__name__)
 
@@ -138,6 +138,21 @@ class TradeDB:
             CREATE INDEX IF NOT EXISTS idx_execution_strategy_ts ON execution_audit(strategy, ts);
             CREATE INDEX IF NOT EXISTS idx_execution_status_ts ON execution_audit(status, ts);
             CREATE INDEX IF NOT EXISTS idx_validation_ts ON validation_audit(ts);
+
+            CREATE TABLE IF NOT EXISTS monitoring_metrics (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                ts TEXT NOT NULL,
+                opp_detected INTEGER DEFAULT 0,
+                opp_executed INTEGER DEFAULT 0,
+                exec_rate REAL DEFAULT 0,
+                avg_latency_ms REAL DEFAULT 0,
+                avg_fill_quality REAL DEFAULT 0,
+                drawdown_pct REAL DEFAULT 0,
+                total_profit REAL DEFAULT 0,
+                alarms_json TEXT DEFAULT '[]'
+            );
+
+            CREATE INDEX IF NOT EXISTS idx_monitoring_ts ON monitoring_metrics(ts);
             """
         )
 
@@ -197,6 +212,76 @@ class TradeDB:
 
         placeholders = ",".join("?" for _ in values)
         return f"IN ({placeholders})", values
+
+    # ------------------------------------------------------------------
+    # Single trade lookup
+    # ------------------------------------------------------------------
+
+    def get_trade(self, trade_id: int) -> Optional[dict]:
+        """Tek bir trade'in tum bilgilerini dondur. Paper PnL fix icin."""
+        self._ensure_conn()
+        row = self.conn.execute(
+            """
+            SELECT id, ts as time, strategy, market_id, question,
+                   side, price, size, cost,
+                   is_paper, status, pnl, resolved_at, notes,
+                   expected_fee_usd, expected_slippage_usd,
+                   expected_net_usd, expected_net_pct,
+                   predicted_edge, model_version,
+                   decision_reason, exit_reason,
+                   realized_fee_usd, realized_net_pct,
+                   borrow_fee_usd, realized_slippage_usd,
+                   gross_pnl, expected_gas_usd, realized_gas_usd,
+                   entry_latency_ms, fill_ratio, reject_reason, execution_id
+            FROM trades
+            WHERE id=?
+            """,
+            (trade_id,),
+        ).fetchone()
+        if row:
+            return dict(row)
+        return None
+
+    def get_open_trades(self) -> list:
+        """Açık (resolved olmamış) tüm trade'leri getir."""
+        self._ensure_conn()
+        rows = self.conn.execute(
+            """
+            SELECT id, ts as time, strategy, market_id, question,
+                   side, price, size, cost,
+                   is_paper, status, pnl, resolved_at, notes
+            FROM trades
+            WHERE status = 'open'
+            ORDER BY id ASC
+            """
+        ).fetchall()
+        return [dict(row) for row in rows]
+
+    def log_monitoring_snapshot(self, metrics: dict, alarms: list):
+        """Monitoring metriklerini kaydet."""
+        self._ensure_conn()
+        import json as _json
+        self.conn.execute(
+            """
+            INSERT INTO monitoring_metrics (
+                ts, opp_detected, opp_executed, exec_rate,
+                avg_latency_ms, avg_fill_quality, drawdown_pct,
+                total_profit, alarms_json
+            ) VALUES (?,?,?,?,?,?,?,?,?)
+            """,
+            (
+                self._now(),
+                metrics.get("opportunities_per_min", 0),
+                metrics.get("executions_per_min", 0),
+                metrics.get("execution_rate_pct", 0),
+                metrics.get("avg_latency_ms", 0),
+                metrics.get("avg_fill_quality", 0),
+                metrics.get("drawdown_pct", 0),
+                metrics.get("total_profit", 0),
+                _json.dumps(alarms, separators=(",", ":")),
+            ),
+        )
+        self.conn.commit()
 
     # ------------------------------------------------------------------
     # Trades
