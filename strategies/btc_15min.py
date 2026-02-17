@@ -71,6 +71,18 @@ class BTC15MinStrategy(BTC5MinFastStrategy):
                 f"remaining={remaining:.0f}s ref=${btc_price:,.2f}"
             )
 
+        # 3b. COOLDOWN: son trade'den 60s gecmemisse girme
+        if time.time() - self._last_trade_ts < 60:
+            if self._scan_count % 30 == 1:
+                log.info(f"[15m] SKIP: cooldown active ({60 - (time.time() - self._last_trade_ts):.0f}s left)")
+            return
+
+        # 3c. Ayni market_id'ye tekrar girme
+        if market_id in self._traded_market_ids:
+            if self._scan_count % 30 == 1:
+                log.info(f"[15m] SKIP: already traded this market {market_id[:12]}")
+            return
+
         # 4. Already have a position in this market?
         if self._has_position or market_id == self._last_trade_market_id:
             await self._track_live_prices(market)
@@ -133,6 +145,13 @@ class BTC15MinStrategy(BTC5MinFastStrategy):
         # 9. NOISE FILTER: 15m uses MIN_DELTA_FOR_ENTRY_15M
         min_delta = getattr(self.cfg, "MIN_DELTA_FOR_ENTRY_15M", 0.0005)
         if abs(delta) < min_delta:
+            return
+
+        # 9b. MOMENTUM CAP: cok yuksek momentum = trend uzamis, mean reversion riski
+        max_mom = getattr(self.cfg, "MAX_MOMENTUM_FOR_ENTRY_15M", 0.0006)
+        if momentum is not None and abs(momentum) > max_mom:
+            if self._scan_count % 30 == 1:
+                log.info(f"[15m] SKIP: momentum too high |{momentum:.6f}| > {max_mom}")
             return
 
         # 10. Determine direction
@@ -257,11 +276,24 @@ class BTC15MinStrategy(BTC5MinFastStrategy):
                     market["up_price"] = round(1.0 - midpoint, 4)
                 log.info(f"[15m] CLOB LIVE PRICE: UP={market['up_price']} DOWN={market['down_price']}")
 
+        # 14b. CLOB fiyat zorunlulugu — Gamma API bu marketlerde yanlis fiyat veriyor
+        if not orderbook or not (orderbook.get("bids") and orderbook.get("asks")):
+            if self._scan_count % 30 == 1:
+                log.info("[15m] SKIP: no CLOB orderbook — Gamma price unreliable")
+            return
+
         edge = 0.05  # Fixed edge
 
         # 15. Position sizing
         price = market.get("up_price" if direction == "up" else "down_price", 0.5)
         size = self.cfg.TRADE_SIZE_USD
+
+        # 15b. PRICE CAP: cok pahali giris = kotu risk/odul orani
+        max_price = getattr(self.cfg, "MAX_ENTRY_PRICE_15M", 0.80)
+        if price > max_price:
+            if self._scan_count % 30 == 1:
+                log.info(f"[15m] SKIP: entry price too high {price:.4f} > {max_price}")
+            return
 
         # 16. Execution Validation
         t_detect = time.monotonic()
@@ -334,6 +366,8 @@ class BTC15MinStrategy(BTC5MinFastStrategy):
         if tid:
             self._has_position = True
             self._last_trade_market_id = market_id
+            self._last_trade_ts = time.time()
+            self._traded_market_ids.add(market_id)
 
             try:
                 self.db.conn.execute(

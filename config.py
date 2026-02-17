@@ -38,6 +38,8 @@ class Config:
     LOOP_INTERVAL: float = 2.0            # fast-loop interval (seconds)
     MIN_DELTA_FOR_ENTRY: float = 0.0003    # %0.03 minimum sinyal gücü (gürültü filtresi)
     OBSERVATION_CONSISTENCY_MIN: float = 0.55  # gözlem trend tutarlılığı alt sınırı
+    MAX_MOMENTUM_FOR_ENTRY: float = 0.0005    # 5dk: momentum > %0.05 ise trend uzamis
+    MAX_ENTRY_PRICE: float = 0.80             # fiyat > 0.80 ise girme (risk/odul kotu)
 
     # Edge model tuning
     MOMENTUM_WEIGHT: float = 50.0         # how much delta amplifies probability
@@ -55,9 +57,11 @@ class Config:
     MARKET_15M_ENABLED: bool = False
     MARKET_15M_FILE: str = "/tmp/polymarket_bot_15m_enabled"
     MIN_SECONDS_REMAINING_15M: int = 60
-    MAX_SECONDS_REMAINING_15M: int = 540       # ilk 360s gozlem (900-540=360)
+    MAX_SECONDS_REMAINING_15M: int = 420       # ilk 480s gozlem (900-420=480), son 7dk giris
     MIN_DELTA_FOR_ENTRY_15M: float = 0.0005
     OBSERVATION_CONSISTENCY_MIN_15M: float = 0.50
+    MAX_MOMENTUM_FOR_ENTRY_15M: float = 0.0006  # 15dk: biraz daha toleransli
+    MAX_ENTRY_PRICE_15M: float = 0.80            # 15dk icin de ayni
 
     # Execution Validation (PDF s.35-36)
     MIN_NET_PROFIT_USD: float = 0.001        # $1 test: çok düşük eşik

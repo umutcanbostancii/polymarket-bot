@@ -47,6 +47,8 @@ class BTC5MinFastStrategy(BaseStrategy):
         self._scan_count = 0
         self._ai_prediction = None
         self._live_trade_count = 0
+        self._last_trade_ts = 0.0          # son trade zamani (cooldown)
+        self._traded_market_ids = set()     # bu session'da trade acilan market id'ler
 
         # Observation phase state
         self._obs_prices = []       # [(ts, btc_price)]
@@ -110,6 +112,18 @@ class BTC5MinFastStrategy(BaseStrategy):
                 f"remaining={remaining:.0f}s ref=${btc_price:,.2f}"
             )
 
+        # 3b. COOLDOWN: son trade'den 60s gecmemisse girme
+        if time.time() - self._last_trade_ts < 60:
+            if self._scan_count % 30 == 1:
+                log.info(f"SKIP: cooldown active ({60 - (time.time() - self._last_trade_ts):.0f}s left)")
+            return
+
+        # 3c. Ayni market_id'ye tekrar girme
+        if market_id in self._traded_market_ids:
+            if self._scan_count % 30 == 1:
+                log.info(f"SKIP: already traded this market {market_id[:12]}")
+            return
+
         # 4. Already have a position in this market? - Track prices anyway
         if self._has_position or market_id == self._last_trade_market_id:
             await self._track_live_prices(market)
@@ -170,6 +184,12 @@ class BTC5MinFastStrategy(BaseStrategy):
 
         # 9. NOISE FILTER: delta çok küçükse gürültü
         if abs(delta) < self.cfg.MIN_DELTA_FOR_ENTRY:
+            return
+
+        # 9b. MOMENTUM CAP: cok yuksek momentum = trend uzamis, mean reversion riski
+        if momentum is not None and abs(momentum) > self.cfg.MAX_MOMENTUM_FOR_ENTRY:
+            if self._scan_count % 30 == 1:
+                log.info(f"SKIP: momentum too high |{momentum:.6f}| > {self.cfg.MAX_MOMENTUM_FOR_ENTRY}")
             return
 
         # 10. Determine direction — delta + momentum uyumu gerekli
@@ -246,11 +266,23 @@ class BTC5MinFastStrategy(BaseStrategy):
                     market["up_price"] = round(1.0 - midpoint, 4)
                 log.info(f"CLOB LIVE PRICE: UP={market['up_price']} DOWN={market['down_price']}")
 
+        # 14b. CLOB fiyat zorunlulugu — Gamma API bu marketlerde yanlis fiyat veriyor
+        if not orderbook or not (orderbook.get("bids") and orderbook.get("asks")):
+            if self._scan_count % 30 == 1:
+                log.info("SKIP: no CLOB orderbook — Gamma price unreliable")
+            return
+
         edge = 0.05  # Sabit edge
 
         # 15. Position sizing
         price = market.get("up_price" if direction == "up" else "down_price", 0.5)
         size = self.cfg.TRADE_SIZE_USD
+
+        # 15b. PRICE CAP: cok pahali giris = kotu risk/odul orani
+        if price > self.cfg.MAX_ENTRY_PRICE:
+            if self._scan_count % 30 == 1:
+                log.info(f"SKIP: entry price too high {price:.4f} > {self.cfg.MAX_ENTRY_PRICE}")
+            return
 
         # 16. Execution Validation
         t_detect = time.monotonic()
@@ -329,6 +361,8 @@ class BTC5MinFastStrategy(BaseStrategy):
         if tid:
             self._has_position = True
             self._last_trade_market_id = market_id
+            self._last_trade_ts = time.time()
+            self._traded_market_ids.add(market_id)
 
             try:
                 self.db.conn.execute(

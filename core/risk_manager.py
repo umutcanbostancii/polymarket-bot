@@ -15,6 +15,7 @@ class RiskManager:
         self._halted = False
         self._halt_reason = ""
         self._halt_time = 0.0
+        self._consec_warned = 0  # son uyari verilen ardisik kayip sayisi
 
     @property
     def is_halted(self) -> bool:
@@ -35,12 +36,15 @@ class RiskManager:
             self.halt(reason)
             return False, reason
 
-        # Consecutive losses (only count active strategy, not dead ones)
+        # Consecutive losses — warn but auto-resume (paper mode icin halt yok)
         losses = self.db.consecutive_losses_by_strategy("btc_5min_fast")
         if losses >= self.cfg.MAX_CONSECUTIVE_LOSSES:
-            reason = f"{losses} consecutive losses (limit={self.cfg.MAX_CONSECUTIVE_LOSSES})"
-            self.halt(reason)
-            return False, reason
+            if not self._consec_warned or losses > self._consec_warned:
+                log.warning(
+                    f"⚠ CONSECUTIVE LOSS WARNING: {losses} ardisik kayip! "
+                    f"(limit={self.cfg.MAX_CONSECUTIVE_LOSSES}) — devam ediliyor"
+                )
+                self._consec_warned = losses
 
         # PDF s.90: max simultaneous positions
         max_pos = getattr(self.cfg, "MAX_SIMULTANEOUS_POSITIONS", 3)
