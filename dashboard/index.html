@@ -4,223 +4,8 @@
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>Polymarket BTC Trading Dashboard</title>
-<style>
-*{margin:0;padding:0;box-sizing:border-box}
-:root{
-  --bg:#0b0e11;--bg2:#1e2329;--bg3:#2b3139;--bg4:#14151a;
-  --text:#eaecef;--text2:#848e9c;--text3:#5e6673;
-  --green:#0ecb81;--red:#f6465d;--blue:#1e90ff;--gold:#f0b90b;
-  --purple:#a855f7;--orange:#f59e0b;
-  --border:#2b3139;--radius:12px;
-}
-body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,sans-serif;
-  background:var(--bg);color:var(--text);overflow-x:hidden}
-
-/* ── Header ─────────────────────────────────────────────── */
-.header{display:flex;align-items:center;justify-content:space-between;
-  padding:14px 24px;border-bottom:1px solid var(--border);background:var(--bg4)}
-.header-left{display:flex;align-items:center;gap:12px}
-.logo{font-size:22px;font-weight:700;color:var(--gold);letter-spacing:-0.5px}
-.logo span{color:var(--text2);font-weight:400;font-size:14px;margin-left:8px}
-.header-right{display:flex;align-items:center;gap:16px}
-.status-badge{display:flex;align-items:center;gap:6px;padding:6px 14px;
-  border-radius:20px;font-size:13px;font-weight:600}
-.status-badge.running{background:rgba(14,203,129,0.15);color:var(--green)}
-.status-badge.stopped{background:rgba(246,70,93,0.15);color:var(--red)}
-.status-dot{width:8px;height:8px;border-radius:50%;background:currentColor;animation:pulse 2s infinite}
-@keyframes pulse{0%,100%{opacity:1}50%{opacity:0.4}}
-.mode-badge{padding:6px 14px;border-radius:20px;font-size:13px;font-weight:600;
-  background:rgba(30,144,255,0.15);color:var(--blue)}
-
-/* ── Trade Size Panel ───────────────────────────────────── */
-.size-panel-body{padding:16px}
-.size-current-display{text-align:center;margin-bottom:16px;padding:14px;
-  background:linear-gradient(135deg,rgba(240,185,11,0.08) 0%,rgba(240,185,11,0.02) 100%);
-  border:1px solid rgba(240,185,11,0.2);border-radius:10px}
-.size-current-label{font-size:10px;color:var(--text2);text-transform:uppercase;
-  letter-spacing:1px;margin-bottom:4px}
-.size-current-value{font-size:32px;font-weight:700;color:var(--gold);
-  font-variant-numeric:tabular-nums}
-.size-presets{display:grid;grid-template-columns:repeat(4,1fr);gap:6px;margin-bottom:14px}
-.size-btn{padding:8px 4px;border-radius:8px;border:1px solid var(--border);
-  background:var(--bg);color:var(--text2);font-size:13px;cursor:pointer;
-  transition:all .15s;font-weight:600;text-align:center}
-.size-btn:hover{background:var(--bg3);color:var(--text);border-color:var(--text3)}
-.size-btn.active{background:var(--gold);color:#000;border-color:var(--gold);font-weight:700}
-.size-custom-row{display:flex;align-items:center;gap:6px}
-.size-custom-row span{font-size:14px;color:var(--text2);font-weight:700}
-.size-input{flex:1;padding:8px 10px;border-radius:8px;border:1px solid var(--border);
-  background:var(--bg);color:var(--text);font-size:13px;text-align:right;
-  font-variant-numeric:tabular-nums}
-.size-input:focus{outline:none;border-color:var(--gold)}
-.size-apply{padding:8px 14px;border-radius:8px;border:1px solid var(--gold);
-  background:rgba(240,185,11,0.15);color:var(--gold);font-size:12px;cursor:pointer;
-  font-weight:700;transition:all .15s;white-space:nowrap}
-.size-apply:hover{background:var(--gold);color:#000}
-
-/* ── Stats Cards ────────────────────────────────────────── */
-.stats-row{display:grid;grid-template-columns:repeat(7,1fr);gap:10px;padding:14px 24px}
-.stat-card{background:var(--bg2);border:1px solid var(--border);border-radius:var(--radius);
-  padding:14px 16px;transition:transform .15s}
-.stat-card:hover{transform:translateY(-2px)}
-.stat-card.wallet{background:linear-gradient(135deg,#1a1a2e 0%,#16213e 100%);
-  border-color:var(--gold)}
-.stat-label{font-size:11px;color:var(--text2);text-transform:uppercase;
-  letter-spacing:0.5px;margin-bottom:4px}
-.stat-value{font-size:22px;font-weight:700;font-variant-numeric:tabular-nums}
-.stat-sub{font-size:11px;color:var(--text2);margin-top:3px}
-.stat-value.positive{color:var(--green)}
-.stat-value.negative{color:var(--red)}
-.stat-value.gold{color:var(--gold)}
-
-/* ── Panels ─────────────────────────────────────────────── */
-.panel{background:var(--bg2);border:1px solid var(--border);border-radius:var(--radius);overflow:hidden}
-.panel-header{display:flex;align-items:center;justify-content:space-between;
-  padding:12px 16px;border-bottom:1px solid var(--border)}
-.panel-title{font-size:14px;font-weight:600}
-.main-grid{display:grid;grid-template-columns:1fr 280px 280px 280px;gap:12px;padding:0 24px 12px}
-#chart-container{height:400px}
-.interval-btns{display:flex;gap:4px}
-.interval-btn{padding:4px 12px;border-radius:6px;border:1px solid var(--border);
-  background:transparent;color:var(--text2);font-size:12px;cursor:pointer;transition:all .15s}
-.interval-btn.active{background:var(--blue);color:#fff;border-color:var(--blue)}
-.interval-btn:hover:not(.active){background:var(--bg3)}
-
-/* ── Market Panel ───────────────────────────────────────── */
-.market-info{padding:16px}
-.market-name{font-size:14px;font-weight:600;margin-bottom:10px;line-height:1.4}
-.countdown-row{display:flex;align-items:center;justify-content:space-between;margin-bottom:14px}
-.countdown{font-size:34px;font-weight:700;font-variant-numeric:tabular-nums;color:var(--gold)}
-.countdown.urgent{color:var(--red);animation:pulse 1s infinite}
-.countdown-label{font-size:11px;color:var(--text2)}
-.price-row{display:grid;grid-template-columns:1fr 1fr;gap:8px;margin-bottom:14px}
-.price-box{padding:10px;border-radius:8px;text-align:center}
-.price-box.up{background:rgba(14,203,129,0.1);border:1px solid rgba(14,203,129,0.3)}
-.price-box.down{background:rgba(246,70,93,0.1);border:1px solid rgba(246,70,93,0.3)}
-.price-box .label{font-size:10px;text-transform:uppercase;letter-spacing:1px;margin-bottom:3px}
-.price-box.up .label{color:var(--green)}.price-box.down .label{color:var(--red)}
-.price-box .val{font-size:20px;font-weight:700}
-.price-box.up .val{color:var(--green)}.price-box.down .val{color:var(--red)}
-.market-meta{display:flex;gap:16px;margin-bottom:12px}
-.market-meta .item{font-size:12px;color:var(--text2)}
-.market-meta .item b{color:var(--text);font-weight:600}
-.progress-bar{height:4px;background:var(--bg3);border-radius:2px;overflow:hidden;margin-bottom:14px}
-.progress-bar .fill{height:100%;border-radius:2px;transition:width 1s linear}
-.progress-bar .fill.early{background:var(--green)}
-.progress-bar .fill.mid{background:var(--gold)}
-.progress-bar .fill.late{background:var(--red)}
-.depth-title{font-size:12px;font-weight:600;color:var(--text2);margin-bottom:6px;
-  text-transform:uppercase;letter-spacing:0.5px}
-.depth-grid{display:grid;grid-template-columns:1fr 1fr;gap:2px}
-.depth-side-header{font-size:10px;color:var(--text3);padding:3px 8px;text-transform:uppercase;letter-spacing:0.5px}
-.depth-level{display:flex;align-items:center;padding:2px 8px;position:relative;
-  font-size:11px;font-variant-numeric:tabular-nums}
-.depth-level .bar{position:absolute;top:0;bottom:0;opacity:0.15;border-radius:2px}
-.depth-level.bid .bar{right:0;background:var(--green)}
-.depth-level.ask .bar{left:0;background:var(--red)}
-.depth-level .price{flex:1;position:relative;z-index:1}
-.depth-level .size{position:relative;z-index:1;color:var(--text2)}
-.depth-level.bid .price{color:var(--green);text-align:right}
-.depth-level.ask .price{color:var(--red)}
-.depth-level.bid{flex-direction:row-reverse}
-
-/* ── Analytics Grid ─────────────────────────────────────── */
-.analytics-grid{display:grid;grid-template-columns:1fr 1fr 1fr;gap:12px;padding:0 24px 12px}
-.analytics-2col{display:grid;grid-template-columns:1fr 1fr;gap:12px;padding:0 24px 12px}
-.panel-body{padding:16px}
-
-/* ── Learning Panel ─────────────────────────────────────── */
-.factor-group{margin-bottom:14px}
-.factor-group-title{font-size:12px;font-weight:600;margin-bottom:8px;display:flex;align-items:center;gap:6px}
-.factor-group-title.win{color:var(--green)}
-.factor-group-title.loss{color:var(--red)}
-.factor-row{display:flex;align-items:center;gap:8px;margin-bottom:6px;font-size:12px}
-.factor-label{width:130px;color:var(--text2);flex-shrink:0}
-.factor-bar-bg{flex:1;height:16px;background:var(--bg3);border-radius:3px;overflow:hidden;position:relative}
-.factor-bar{height:100%;border-radius:3px;transition:width .5s}
-.factor-bar.win{background:var(--green)}
-.factor-bar.loss{background:var(--red)}
-.factor-count{width:32px;text-align:right;color:var(--text2);font-size:11px;flex-shrink:0}
-
-/* ── Hourly Heatmap ─────────────────────────────────────── */
-.heatmap{display:grid;grid-template-columns:repeat(12,1fr);gap:3px;margin-bottom:14px}
-.heat-cell{aspect-ratio:1;border-radius:4px;display:flex;flex-direction:column;
-  align-items:center;justify-content:center;font-size:9px;cursor:default;
-  transition:transform .1s;border:1px solid transparent}
-.heat-cell:hover{transform:scale(1.15);border-color:var(--text3)}
-.heat-cell .hour{color:var(--text3);font-weight:600}
-.heat-cell .wr{font-weight:700;font-size:10px}
-
-/* ── Delta Bars ─────────────────────────────────────────── */
-.delta-row{display:flex;align-items:center;gap:8px;margin-bottom:8px}
-.delta-label{width:90px;font-size:11px;color:var(--text2);flex-shrink:0}
-.delta-bar-container{flex:1;display:flex;align-items:center;gap:6px}
-.delta-bar-track{flex:1;height:20px;background:var(--bg3);border-radius:4px;overflow:hidden;position:relative}
-.delta-bar-fill{height:100%;border-radius:4px;display:flex;align-items:center;
-  justify-content:flex-end;padding-right:6px;font-size:10px;font-weight:600;color:#fff;
-  transition:width .5s}
-.delta-count{width:40px;font-size:11px;color:var(--text2);text-align:right;flex-shrink:0}
-
-/* ── Risk Panel ─────────────────────────────────────────── */
-.risk-grid{display:grid;grid-template-columns:1fr 1fr;gap:10px;margin-bottom:14px}
-.risk-item{background:var(--bg);border-radius:8px;padding:12px;text-align:center}
-.risk-item .label{font-size:10px;color:var(--text2);text-transform:uppercase;
-  letter-spacing:0.5px;margin-bottom:4px}
-.risk-item .value{font-size:20px;font-weight:700}
-#pnl-chart-container{height:140px;margin-top:8px}
-
-/* ── AI Insights ────────────────────────────────────────── */
-.insights-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(280px,1fr));gap:10px}
-.insight-card{display:flex;align-items:flex-start;gap:10px;padding:12px 14px;
-  border-radius:8px;font-size:13px;line-height:1.4}
-.insight-card.positive{background:rgba(14,203,129,0.08);border:1px solid rgba(14,203,129,0.2)}
-.insight-card.negative{background:rgba(246,70,93,0.08);border:1px solid rgba(246,70,93,0.2)}
-.insight-card.neutral{background:rgba(30,144,255,0.08);border:1px solid rgba(30,144,255,0.2)}
-.insight-icon{font-size:20px;flex-shrink:0;margin-top:1px}
-.insight-text{color:var(--text)}
-
-/* ── Trades Table ───────────────────────────────────────── */
-.trades-panel{margin:0 24px 24px;background:var(--bg2);border:1px solid var(--border);
-  border-radius:var(--radius);overflow:hidden}
-.trades-header{display:flex;align-items:center;justify-content:space-between;
-  padding:12px 16px;border-bottom:1px solid var(--border)}
-.trades-header .title{font-size:14px;font-weight:600}
-.trades-header .count{font-size:13px;color:var(--text2)}
-.trades-table{width:100%;border-collapse:collapse}
-.trades-table th{padding:8px 14px;text-align:left;font-size:10px;color:var(--text3);
-  text-transform:uppercase;letter-spacing:0.5px;border-bottom:1px solid var(--border);
-  position:sticky;top:0;background:var(--bg2)}
-.trades-table td{padding:8px 14px;font-size:12px;border-bottom:1px solid rgba(43,49,57,0.5);
-  font-variant-numeric:tabular-nums}
-.trades-table tr:hover{background:rgba(255,255,255,0.02)}
-.trades-table tr.win td:first-child{border-left:3px solid var(--green)}
-.trades-table tr.loss td:first-child{border-left:3px solid var(--red)}
-.trades-table tr.pending td:first-child{border-left:3px solid var(--text3)}
-.market-label{display:inline-block;padding:2px 6px;border-radius:3px;font-size:10px;
-  color:var(--text2);background:rgba(255,255,255,0.05);white-space:nowrap}
-.side-badge{display:inline-flex;align-items:center;gap:4px;padding:2px 8px;
-  border-radius:4px;font-size:11px;font-weight:600}
-.side-badge.up{background:rgba(14,203,129,0.12);color:var(--green)}
-.side-badge.down{background:rgba(246,70,93,0.12);color:var(--red)}
-.result-badge{font-weight:600;font-size:11px}
-.result-badge.win{color:var(--green)}.result-badge.loss{color:var(--red)}
-.result-badge.pending{color:var(--text3)}
-.pnl-cell.positive{color:var(--green);font-weight:600}
-.pnl-cell.negative{color:var(--red);font-weight:600}
-.trades-scroll{max-height:340px;overflow-y:auto}
-.trades-scroll::-webkit-scrollbar{width:5px}
-.trades-scroll::-webkit-scrollbar-track{background:var(--bg2)}
-.trades-scroll::-webkit-scrollbar-thumb{background:var(--bg3);border-radius:3px}
-.empty{text-align:center;padding:30px;color:var(--text3);font-size:13px}
-
-@media(max-width:1400px){.main-grid{grid-template-columns:1fr 260px 260px 260px}}
-@media(max-width:1200px){.analytics-grid{grid-template-columns:1fr 1fr}
-  .main-grid{grid-template-columns:1fr 1fr;grid-template-rows:auto auto}
-  .stats-row{grid-template-columns:repeat(4,1fr)}}
-@media(max-width:900px){.main-grid{grid-template-columns:1fr}
-  .analytics-grid{grid-template-columns:1fr}
-  .stats-row{grid-template-columns:repeat(3,1fr)}}
-</style>
+<!-- Combined CSS (modular sources in static/css/) -->
+<link rel="stylesheet" href="/static/css/all.css?v=7">
 </head>
 <body>
 
@@ -237,8 +22,15 @@ body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,sans-serif;
   </div>
 </div>
 
+<!-- Top Tabs -->
+<div class="top-tabs" id="top-tabs">
+  <button class="top-tab active" data-tab="main">Ana Panel</button>
+  <button class="top-tab" data-tab="test">Test Panel</button>
+  <button class="top-tab" data-tab="arb">Arbitrage</button>
+</div>
+
 <!-- Stats Row -->
-<div class="stats-row">
+<div class="stats-row" id="normal-stats-row">
   <div class="stat-card wallet">
     <div class="stat-label">Cuzdan Bakiyesi</div>
     <div class="stat-value gold" id="s-wallet">—</div>
@@ -273,6 +65,45 @@ body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,sans-serif;
     <div class="stat-label">Toplam Islem</div>
     <div class="stat-value" id="s-trades">—</div>
     <div class="stat-sub" id="s-trades-sub"></div>
+  </div>
+</div>
+
+<!-- Live Trading Stats Row -->
+<div class="stats-row live-stats-row" id="live-stats-row">
+  <div class="stat-card live-wallet">
+    <div class="stat-label">Polymarket Bakiye</div>
+    <div class="stat-value" id="ls-wallet">—</div>
+    <div class="stat-sub" id="ls-wallet-sub">Gercek bakiye yukleniyor...</div>
+  </div>
+  <div class="stat-card">
+    <div class="stat-label">Canli Net K/Z</div>
+    <div class="stat-value" id="ls-pnl">—</div>
+    <div class="stat-sub" id="ls-pnl-today"></div>
+  </div>
+  <div class="stat-card">
+    <div class="stat-label">Canli Kar</div>
+    <div class="stat-value positive" id="ls-profit">—</div>
+    <div class="stat-sub" id="ls-profit-sub"></div>
+  </div>
+  <div class="stat-card">
+    <div class="stat-label">Canli Zarar</div>
+    <div class="stat-value negative" id="ls-loss">—</div>
+    <div class="stat-sub" id="ls-loss-sub"></div>
+  </div>
+  <div class="stat-card">
+    <div class="stat-label">Canli Win Rate</div>
+    <div class="stat-value" id="ls-winrate">—</div>
+    <div class="stat-sub" id="ls-winrate-sub"></div>
+  </div>
+  <div class="stat-card">
+    <div class="stat-label">Canli Islem</div>
+    <div class="stat-value" id="ls-trades">—</div>
+    <div class="stat-sub" id="ls-trades-sub"></div>
+  </div>
+  <div class="stat-card">
+    <div class="stat-label">Islem Hacmi</div>
+    <div class="stat-value" id="ls-volume">—</div>
+    <div class="stat-sub" id="ls-volume-sub">Toplam maliyet</div>
   </div>
 </div>
 
@@ -320,6 +151,8 @@ body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,sans-serif;
           <button class="size-btn market-type-btn active" data-market="5m" id="btn-5m">5dk</button>
           <button class="size-btn market-type-btn" data-market="15m" id="btn-15m">15dk</button>
           <button class="size-btn market-type-btn" data-market="both" id="btn-both">Her Ikisi</button>
+          <button class="size-btn market-type-btn" data-market="test" id="btn-test"
+                  style="background:rgba(255,165,0,0.15);color:#ffa500;border-color:rgba(255,165,0,0.3)">Test</button>
         </div>
         <div id="market-15m-status" style="font-size:11px;color:var(--text3);margin-top:6px;text-align:center">15dk: Kapali</div>
       </div>
@@ -356,6 +189,34 @@ body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,sans-serif;
           <div><div class="depth-side-header">Satis (Ask)</div></div>
         </div>
         <div id="depth-levels"></div>
+        <!-- Manual Trade UI - 5m -->
+        <div class="manual-trade-section" id="manual-trade-5m">
+          <div class="manual-trade-title">Elle Islem</div>
+          <div class="trade-direction-btns">
+            <button class="trade-btn up active" data-dir="up">Buy Up</button>
+            <button class="trade-btn down" data-dir="down">Buy Down</button>
+          </div>
+          <div class="trade-amount-row">
+            <div class="trade-preset-btns">
+              <button class="trade-preset" data-amt="1">$1</button>
+              <button class="trade-preset active" data-amt="2">$2</button>
+              <button class="trade-preset" data-amt="5">$5</button>
+              <button class="trade-preset" data-amt="10">$10</button>
+            </div>
+            <input type="number" class="trade-amount-input" id="trade-amount-5m" value="2" min="0.1" step="0.1">
+          </div>
+          <div class="trade-summary">
+            <div class="summary-row">
+              <span>Maliyet</span><span id="trade-cost-5m" class="trade-cost">$2.00</span>
+            </div>
+            <div class="summary-row">
+              <span>Kazanirsan</span><span id="trade-to-win-5m" class="trade-to-win positive">$0.00</span>
+            </div>
+          </div>
+          <div class="trade-min-warn" id="trade-min-warn-5m" style="display:none"></div>
+          <button class="trade-submit-btn" id="submit-trade-5m">Islem Ac</button>
+          <div class="trade-result" id="trade-result-5m"></div>
+        </div>
       </div>
     </div>
   </div>
@@ -390,13 +251,70 @@ body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,sans-serif;
           <div><div class="depth-side-header">Satis (Ask)</div></div>
         </div>
         <div id="depth-levels-15m"></div>
+        <!-- Manual Trade UI - 15m -->
+        <div class="manual-trade-section" id="manual-trade-15m">
+          <div class="manual-trade-title">Elle Islem</div>
+          <div class="trade-direction-btns">
+            <button class="trade-btn up active" data-dir="up">Buy Up</button>
+            <button class="trade-btn down" data-dir="down">Buy Down</button>
+          </div>
+          <div class="trade-amount-row">
+            <div class="trade-preset-btns">
+              <button class="trade-preset" data-amt="1">$1</button>
+              <button class="trade-preset active" data-amt="2">$2</button>
+              <button class="trade-preset" data-amt="5">$5</button>
+              <button class="trade-preset" data-amt="10">$10</button>
+            </div>
+            <input type="number" class="trade-amount-input" id="trade-amount-15m" value="2" min="0.1" step="0.1">
+          </div>
+          <div class="trade-summary">
+            <div class="summary-row">
+              <span>Maliyet</span><span id="trade-cost-15m" class="trade-cost">$2.00</span>
+            </div>
+            <div class="summary-row">
+              <span>Kazanirsan</span><span id="trade-to-win-15m" class="trade-to-win positive">$0.00</span>
+            </div>
+          </div>
+          <div class="trade-min-warn" id="trade-min-warn-15m" style="display:none"></div>
+          <button class="trade-submit-btn" id="submit-trade-15m">Islem Ac</button>
+          <div class="trade-result" id="trade-result-15m"></div>
+        </div>
       </div>
     </div>
   </div>
 </div>
 
+<!-- Decision Pipeline -->
+<div class="decisions-panel" id="decisions-panel">
+  <div class="decisions-header">
+    <span class="title">Karar Pipeline</span>
+    <div class="decisions-tabs" id="decisions-tabs"></div>
+    <button class="decisions-toggle" id="decisions-toggle">&#9660;</button>
+  </div>
+  <div class="decisions-body" id="decisions-body">
+    <div class="empty">Pipeline verisi bekleniyor...</div>
+  </div>
+</div>
+
+<!-- Trades -->
+<div class="trades-panel" id="normal-trades-panel">
+  <div class="trades-header">
+    <span class="title">Islem Gecmisi</span>
+    <span class="count" id="trade-count">0 islem</span>
+  </div>
+  <div class="trades-scroll">
+    <table class="trades-table">
+      <thead><tr>
+        <th>#</th><th>Tarih/Saat</th><th>TR Saati</th><th>Mod</th><th>Market</th><th>Yon</th><th>Maliyet</th>
+        <th>Fiyat</th><th>Miktar</th><th>Durum</th><th>Kar/Zarar</th>
+      </tr></thead>
+      <tbody id="trades-body"></tbody>
+    </table>
+  </div>
+</div>
+
 <!-- Strategy Comparison -->
-<div class="analytics-2col">
+<div class="analytics-2col" id="strategy-comparison">
   <div class="panel">
     <div class="panel-header"><span class="panel-title" style="display:flex;align-items:center;gap:6px">
       <span style="font-size:10px;padding:2px 6px;border-radius:3px;background:rgba(30,144,255,0.15);color:var(--blue);font-weight:600">5dk</span>
@@ -443,8 +361,331 @@ body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,sans-serif;
   </div>
 </div>
 
+<!-- Test Mode Panel (full-screen when active) -->
+<div id="test-mode-panel" style="display:none">
+  <!-- Test Stats Row -->
+  <div class="stats-row" id="test-stats-row">
+    <div class="stat-card wallet" style="border-color:#ffa500">
+      <div class="stat-label">Test Cuzdan</div>
+      <div class="stat-value gold" id="ts-wallet">—</div>
+      <div class="stat-sub" id="ts-wallet-sub">Baslangic: $1,000</div>
+    </div>
+    <div class="stat-card">
+      <div class="stat-label">Test Net K/Z</div>
+      <div class="stat-value" id="ts-pnl">—</div>
+      <div class="stat-sub" id="ts-pnl-today"></div>
+    </div>
+    <div class="stat-card">
+      <div class="stat-label">Test Kar</div>
+      <div class="stat-value positive" id="ts-profit">—</div>
+      <div class="stat-sub" id="ts-profit-sub"></div>
+    </div>
+    <div class="stat-card">
+      <div class="stat-label">Test Zarar</div>
+      <div class="stat-value negative" id="ts-loss">—</div>
+      <div class="stat-sub" id="ts-loss-sub"></div>
+    </div>
+    <div class="stat-card">
+      <div class="stat-label">Test Win Rate</div>
+      <div class="stat-value" id="ts-winrate">—</div>
+      <div class="stat-sub" id="ts-winrate-sub"></div>
+    </div>
+    <div class="stat-card">
+      <div class="stat-label">Test Islem</div>
+      <div class="stat-value" id="ts-trades">—</div>
+      <div class="stat-sub" id="ts-trades-sub"></div>
+    </div>
+  </div>
+
+  <!-- Test Trades -->
+  <div class="trades-panel" id="test-trades-panel" style="margin:0 24px 24px">
+    <div class="trades-header">
+      <span class="title">Test Islem Gecmisi</span>
+      <span class="count" id="test-trade-count">0 islem</span>
+    </div>
+    <div class="trades-scroll">
+      <table class="trades-table">
+        <thead><tr>
+          <th>#</th><th>Tarih/Saat</th><th>TR Saati</th><th>Mod</th><th>Market</th><th>Yon</th><th>Maliyet</th>
+          <th>Fiyat</th><th>Miktar</th><th>Durum</th><th>Kar/Zarar</th>
+        </tr></thead>
+        <tbody id="test-trades-body"></tbody>
+      </table>
+    </div>
+  </div>
+
+  <!-- Test Strategy Comparison -->
+  <div class="analytics-2col" style="padding:0 24px 12px">
+    <div class="panel">
+      <div class="panel-header"><span class="panel-title" style="display:flex;align-items:center;gap:6px">
+        <span style="font-size:10px;padding:2px 6px;border-radius:3px;background:rgba(255,165,0,0.15);color:#ffa500;font-weight:600">TEST 5dk</span>
+        Strateji Performansi
+      </span></div>
+      <div class="panel-body">
+        <div class="risk-grid" style="margin-bottom:10px">
+          <div class="risk-item"><div class="label">Islem</div><div class="value" id="stest5m-total" style="color:#ffa500">0</div></div>
+          <div class="risk-item"><div class="label">Win Rate</div><div class="value" id="stest5m-wr">—</div></div>
+          <div class="risk-item"><div class="label">Net P&amp;L</div><div class="value" id="stest5m-pnl">$0</div></div>
+          <div class="risk-item"><div class="label">Kar / Zarar</div><div class="value" id="stest5m-wl" style="font-size:14px">0W / 0L</div></div>
+        </div>
+        <div class="factor-group">
+          <div class="factor-group-title win">&#10004; Neden Kazandi?</div>
+          <div id="twin-factors-5m"></div>
+        </div>
+        <div class="factor-group">
+          <div class="factor-group-title loss">&#10008; Neden Kaybetti?</div>
+          <div id="tloss-factors-5m"></div>
+        </div>
+      </div>
+    </div>
+    <div class="panel">
+      <div class="panel-header"><span class="panel-title" style="display:flex;align-items:center;gap:6px">
+        <span style="font-size:10px;padding:2px 6px;border-radius:3px;background:rgba(255,165,0,0.15);color:#ffa500;font-weight:600">TEST 15dk</span>
+        Strateji Performansi
+      </span></div>
+      <div class="panel-body">
+        <div class="risk-grid" style="margin-bottom:10px">
+          <div class="risk-item"><div class="label">Islem</div><div class="value" id="stest15m-total" style="color:#ffa500">0</div></div>
+          <div class="risk-item"><div class="label">Win Rate</div><div class="value" id="stest15m-wr">—</div></div>
+          <div class="risk-item"><div class="label">Net P&amp;L</div><div class="value" id="stest15m-pnl">$0</div></div>
+          <div class="risk-item"><div class="label">Kar / Zarar</div><div class="value" id="stest15m-wl" style="font-size:14px">0W / 0L</div></div>
+        </div>
+        <div class="factor-group">
+          <div class="factor-group-title win">&#10004; Neden Kazandi?</div>
+          <div id="twin-factors-15m"></div>
+        </div>
+        <div class="factor-group">
+          <div class="factor-group-title loss">&#10008; Neden Kaybetti?</div>
+          <div id="tloss-factors-15m"></div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- Test Analytics Grid: Learning + Performance + Risk -->
+  <div class="analytics-grid" style="padding:0 24px 12px">
+    <!-- Test Learning -->
+    <div class="panel">
+      <div class="panel-header"><span class="panel-title">Test Ogrenme Analizi</span></div>
+      <div class="panel-body">
+        <div class="factor-group">
+          <div class="factor-group-title win">&#10004; Neden Kazandi?</div>
+          <div id="twin-factors"></div>
+        </div>
+        <div class="factor-group">
+          <div class="factor-group-title loss">&#10008; Neden Kaybetti?</div>
+          <div id="tloss-factors"></div>
+        </div>
+      </div>
+    </div>
+    <!-- Test Performance -->
+    <div class="panel">
+      <div class="panel-header"><span class="panel-title">Test Performans</span></div>
+      <div class="panel-body">
+        <div class="depth-title">Saatlik Basari (UTC)</div>
+        <div class="heatmap" id="test-hourly-heatmap"></div>
+        <div class="depth-title">Delta Gucune Gore Win Rate</div>
+        <div id="test-delta-bars"></div>
+      </div>
+    </div>
+    <!-- Test Risk -->
+    <div class="panel">
+      <div class="panel-header"><span class="panel-title">Test Risk Yonetimi</span></div>
+      <div class="panel-body">
+        <div class="risk-grid">
+          <div class="risk-item">
+            <div class="label">Acik Pozisyon</div>
+            <div class="value" id="tr-open" style="color:#ffa500">0</div>
+          </div>
+          <div class="risk-item">
+            <div class="label">Max Drawdown</div>
+            <div class="value negative" id="tr-dd">$0</div>
+          </div>
+          <div class="risk-item">
+            <div class="label">Kazanma Serisi</div>
+            <div class="value positive" id="tr-win-streak">0</div>
+          </div>
+          <div class="risk-item">
+            <div class="label">Kayip Serisi</div>
+            <div class="value negative" id="tr-loss-streak">0</div>
+          </div>
+        </div>
+        <div class="depth-title">Gunluk P&amp;L</div>
+        <div id="test-pnl-chart-container" style="height:140px;margin-top:8px"></div>
+      </div>
+    </div>
+  </div>
+
+  <!-- Test AI Insights -->
+  <div style="padding:0 24px 12px">
+    <div class="panel">
+      <div class="panel-header"><span class="panel-title">Test Insights</span></div>
+      <div class="panel-body">
+        <div class="insights-grid" id="test-insights-grid">
+          <div class="empty">Analiz bekleniyor...</div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- Test Signal Panels -->
+  <div class="analytics-2col" style="padding:0 24px 12px">
+    <div class="panel">
+      <div class="panel-header"><span class="panel-title">Sinyal Agirliklari</span></div>
+      <div class="panel-body" id="signal-weights">
+        <div class="empty">Veri bekleniyor...</div>
+      </div>
+    </div>
+    <div class="panel">
+      <div class="panel-header"><span class="panel-title">Sinyal Dogruluk Oranlari</span></div>
+      <div class="panel-body" id="signal-accuracy">
+        <div class="empty">Veri bekleniyor...</div>
+      </div>
+    </div>
+  </div>
+
+</div>
+
+<!-- Arbitrage Panel -->
+<div id="arb-mode-panel" style="display:none">
+  <div class="arb-warning">
+    Uyari: Bu strateji non-atomic fill ve queue priority riski icerir. "Risk-free" garanti degildir.
+  </div>
+
+  <div class="stats-row" id="arb-stats-row">
+    <div class="stat-card">
+      <div class="stat-label">Arb Durum</div>
+      <div class="stat-value" id="arb-running">Durdu</div>
+      <div class="stat-sub" id="arb-running-sub">Process bekliyor</div>
+    </div>
+    <div class="stat-card">
+      <div class="stat-label">Calisma Modu</div>
+      <div class="stat-value" id="arb-mode">PAPER</div>
+      <div class="stat-sub" id="arb-mode-sub">Konfig mode</div>
+    </div>
+    <div class="stat-card">
+      <div class="stat-label">Uptime</div>
+      <div class="stat-value" id="arb-uptime">0s</div>
+      <div class="stat-sub">Ayrik process</div>
+    </div>
+    <div class="stat-card">
+      <div class="stat-label">Open Orders</div>
+      <div class="stat-value" id="arb-open-orders">0</div>
+      <div class="stat-sub">Bekleyen bacaklar</div>
+    </div>
+    <div class="stat-card">
+      <div class="stat-label">Active Cycles</div>
+      <div class="stat-value" id="arb-active-cycles">0</div>
+      <div class="stat-sub">Acilmis cycle</div>
+    </div>
+    <div class="stat-card">
+      <div class="stat-label">Net PnL</div>
+      <div class="stat-value" id="arb-net-pnl">$0.00</div>
+      <div class="stat-sub" id="arb-net-pnl-sub">7g pencere</div>
+    </div>
+  </div>
+
+  <div class="analytics-2col" style="padding:0 24px 12px">
+    <div class="panel">
+      <div class="panel-header"><span class="panel-title">Arbitrage Kontrol</span></div>
+      <div class="panel-body">
+        <div class="arb-controls">
+          <button class="arb-btn start" id="arb-start-btn">Baslat</button>
+          <button class="arb-btn stop" id="arb-stop-btn">Durdur</button>
+          <button class="arb-btn save" id="arb-save-config-btn">Config Kaydet</button>
+        </div>
+        <div class="arb-live-guard" id="arb-live-guard"></div>
+        <div class="arb-config-grid">
+          <label>Mod
+            <select id="arb-cfg-mode">
+              <option value="paper">paper</option>
+              <option value="live">live</option>
+            </select>
+          </label>
+          <label>Entry Limit
+            <input id="arb-cfg-entry-price" type="number" step="0.001" min="0.01" max="0.99">
+          </label>
+          <label>Bailout Price
+            <input id="arb-cfg-bailout-price" type="number" step="0.001" min="0.01" max="0.99">
+          </label>
+          <label>Cycle Budget (USD)
+            <input id="arb-cfg-cycle-budget" type="number" step="0.1" min="1">
+          </label>
+          <label>Max Active Capital
+            <input id="arb-cfg-max-capital" type="number" step="0.1" min="1">
+          </label>
+          <label>Max Open Cycles
+            <input id="arb-cfg-max-cycles" type="number" step="1" min="1">
+          </label>
+          <label>Min Liquidity
+            <input id="arb-cfg-min-liquidity" type="number" step="1" min="0">
+          </label>
+          <label>Max Spread
+            <input id="arb-cfg-max-spread" type="number" step="0.001" min="0">
+          </label>
+          <label>Entry Delay (s)
+            <input id="arb-cfg-entry-delay" type="number" step="1" min="0">
+          </label>
+          <label>Entry Cutoff (s)
+            <input id="arb-cfg-entry-cutoff" type="number" step="1" min="1">
+          </label>
+        </div>
+      </div>
+    </div>
+    <div class="panel">
+      <div class="panel-header"><span class="panel-title">Risk ve Telemetry</span></div>
+      <div class="panel-body">
+        <div class="risk-grid">
+          <div class="risk-item"><div class="label">Lock Skip</div><div class="value" id="arb-lock-skip">0</div></div>
+          <div class="risk-item"><div class="label">Liquidity Reject</div><div class="value" id="arb-liquidity-reject">0</div></div>
+          <div class="risk-item"><div class="label">Spread Reject</div><div class="value" id="arb-spread-reject">0</div></div>
+          <div class="risk-item"><div class="label">Bail Streak</div><div class="value" id="arb-bail-streak">0</div></div>
+        </div>
+        <div class="arb-telemetry-grid">
+          <div><span>Fill Rate</span><b id="arb-fill-rate">0%</b></div>
+          <div><span>Bailout Rate</span><b id="arb-bailout-rate">0%</b></div>
+          <div><span>Liq Reject Rate</span><b id="arb-liq-reject-rate">0%</b></div>
+          <div><span>Lock Skip Rate</span><b id="arb-lock-skip-rate">0%</b></div>
+          <div><span>Avg Fill Time</span><b id="arb-avg-fill-time">0s</b></div>
+          <div><span>Suggested Price</span><b id="arb-suggested-price">0.450</b></div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <div class="trades-panel" style="margin:0 24px 12px">
+    <div class="trades-header">
+      <span class="title">Arb Cycle Gecmisi</span>
+      <span class="count" id="arb-cycle-count">0 cycle</span>
+    </div>
+    <div class="trades-scroll">
+      <table class="trades-table">
+        <thead><tr>
+          <th>#</th><th>Acilis</th><th>Sembol</th><th>Market</th><th>Mode</th><th>Durum</th><th>Butce</th><th>Fill</th><th>PnL</th><th>Cikis</th>
+        </tr></thead>
+        <tbody id="arb-cycles-body"></tbody>
+      </table>
+    </div>
+  </div>
+
+  <div class="trades-panel" style="margin:0 24px 24px">
+    <div class="trades-header">
+      <span class="title">Arb Event Log</span>
+      <span class="count" id="arb-event-count">0 event</span>
+    </div>
+    <div class="trades-scroll">
+      <table class="trades-table">
+        <thead><tr>
+          <th>#</th><th>Zaman</th><th>Cycle</th><th>Side</th><th>Action</th><th>Price</th><th>Size</th><th>Filled</th><th>State</th><th>Mesaj</th>
+        </tr></thead>
+        <tbody id="arb-events-body"></tbody>
+      </table>
+    </div>
+  </div>
+</div>
+
 <!-- Analytics: Learning + Performance + Risk -->
-<div class="analytics-grid">
+<div class="analytics-grid" id="normal-analytics-grid">
   <!-- Learning (Combined) -->
   <div class="panel">
     <div class="panel-header"><span class="panel-title">Ogrenme Analizi (Toplam)</span></div>
@@ -500,7 +741,7 @@ body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,sans-serif;
 </div>
 
 <!-- AI Insights -->
-<div style="padding:0 24px 12px">
+<div id="normal-insights-section" style="padding:0 24px 12px">
   <div class="panel">
     <div class="panel-header"><span class="panel-title">AI Insights</span></div>
     <div class="panel-body">
@@ -511,678 +752,10 @@ body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,sans-serif;
   </div>
 </div>
 
-<!-- Trades -->
-<div class="trades-panel">
-  <div class="trades-header">
-    <span class="title">Islem Gecmisi</span>
-    <span class="count" id="trade-count">0 islem</span>
-  </div>
-  <div class="trades-scroll">
-    <table class="trades-table">
-      <thead><tr>
-        <th>#</th><th>Tarih/Saat</th><th>Market</th><th>Yon</th><th>Maliyet</th>
-        <th>Fiyat</th><th>Miktar</th><th>Durum</th><th>Kar/Zarar</th>
-      </tr></thead>
-      <tbody id="trades-body"></tbody>
-    </table>
-  </div>
-</div>
-
+<!-- External Libraries -->
 <script src="https://unpkg.com/lightweight-charts@4.1.1/dist/lightweight-charts.standalone.production.js"></script>
-<script>
-const $=s=>document.querySelector(s);
-const $$=s=>document.querySelectorAll(s);
 
-const ICONS={target:'\u{1F3AF}',shuffle:'\u{1F500}',zap:'\u26A1',clock:'\u23F0',
-  sunrise:'\u{1F305}',star:'\u2B50',flame:'\u{1F525}',chart:'\u{1F4C8}'};
-
-const FACTOR_LABELS={
-  strong_delta:'Guclu Delta (>0.003)',medium_delta:'Orta Delta',weak_delta:'Zayif Delta (<0.0005)',
-  early_entry:'Erken Giris (>120s)',mid_entry:'Orta Giris (60-120s)',late_entry:'Gec Giris (<60s)',
-  strong_momentum:'Guclu Momentum',weak_momentum:'Zayif Momentum',
-  momentum_aligned:'Momentum Uyumlu',momentum_divergent:'Momentum Ters'
-};
-
-class Dashboard{
-  constructor(){
-    this.ws=null;this.chart=null;this.candleSeries=null;this.volumeSeries=null;
-    this.pnlChart=null;this.pnlSeries=null;
-    this.currentInterval='5m';this.trades=[];this.stats={};this.analytics={};
-    this.btcPrice=0;this.marketEndTs=0;this.marketStartTs=0;
-    this.market15mEndTs=0;this.market15mStartTs=0;
-    this._countdownTimer=null;this._reconnectDelay=1000;
-    this.tradeSize=1.0;this.is15mEnabled=false;
-  }
-
-  async init(){
-    this.setupChart();
-    this.setupPnlChart();
-    this.setupIntervalBtns();
-    this.setupTradeSize();
-    this.setup15mToggle();
-    await this.loadInitialData();
-    this.connectWS();
-    this._countdownTimer=setInterval(()=>this.updateCountdown(),1000);
-    setInterval(()=>this.refreshAnalytics(),30000);
-  }
-
-  /* ── Charts ─────────────────────────────────────────── */
-
-  setupChart(){
-    const c=$('#chart-container');
-    this.chart=LightweightCharts.createChart(c,{
-      layout:{background:{type:'solid',color:'#1e2329'},textColor:'#848e9c',fontSize:12},
-      grid:{vertLines:{color:'rgba(43,49,57,0.5)'},horzLines:{color:'rgba(43,49,57,0.5)'}},
-      crosshair:{mode:LightweightCharts.CrosshairMode.Normal},
-      rightPriceScale:{borderColor:'#2b3139',scaleMargins:{top:0.1,bottom:0.25}},
-      timeScale:{borderColor:'#2b3139',timeVisible:true,secondsVisible:false},
-    });
-    this.candleSeries=this.chart.addCandlestickSeries({
-      upColor:'#0ecb81',downColor:'#f6465d',borderUpColor:'#0ecb81',
-      borderDownColor:'#f6465d',wickUpColor:'#0ecb81',wickDownColor:'#f6465d',
-    });
-    this.volumeSeries=this.chart.addHistogramSeries({
-      priceFormat:{type:'volume'},priceScaleId:'vol',
-    });
-    this.chart.priceScale('vol').applyOptions({scaleMargins:{top:0.8,bottom:0}});
-    new ResizeObserver(e=>{const{width,height}=e[0].contentRect;
-      this.chart.applyOptions({width,height})}).observe(c);
-  }
-
-  setupPnlChart(){
-    const c=$('#pnl-chart-container');
-    if(!c)return;
-    this.pnlChart=LightweightCharts.createChart(c,{
-      layout:{background:{type:'solid',color:'#1e2329'},textColor:'#848e9c',fontSize:10},
-      grid:{vertLines:{visible:false},horzLines:{color:'rgba(43,49,57,0.3)'}},
-      rightPriceScale:{borderColor:'#2b3139'},
-      timeScale:{borderColor:'#2b3139',timeVisible:false},
-      handleScale:false,handleScroll:false,
-    });
-    this.pnlSeries=this.pnlChart.addAreaSeries({
-      topColor:'rgba(14,203,129,0.3)',bottomColor:'rgba(14,203,129,0.02)',
-      lineColor:'#0ecb81',lineWidth:2,
-    });
-    new ResizeObserver(e=>{const{width,height}=e[0].contentRect;
-      this.pnlChart.applyOptions({width,height})}).observe(c);
-  }
-
-  setupIntervalBtns(){
-    $$('.interval-btn').forEach(btn=>{
-      btn.addEventListener('click',async()=>{
-        $$('.interval-btn').forEach(b=>b.classList.remove('active'));
-        btn.classList.add('active');
-        this.currentInterval=btn.dataset.interval;
-        await this.loadKlines(this.currentInterval);
-      });
-    });
-  }
-
-  setupTradeSize(){
-    // Preset buttons
-    $$('.size-btn').forEach(btn=>{
-      btn.addEventListener('click',()=>{
-        const size=parseFloat(btn.dataset.size);
-        this.setTradeSize(size);
-      });
-    });
-    // Custom input
-    $('#apply-size').addEventListener('click',()=>{
-      const val=parseFloat($('#custom-size').value);
-      if(val>0)this.setTradeSize(val);
-    });
-    $('#custom-size').addEventListener('keydown',e=>{
-      if(e.key==='Enter'){
-        const val=parseFloat($('#custom-size').value);
-        if(val>0)this.setTradeSize(val);
-      }
-    });
-    // Load current size
-    fetch('/api/trade-size').then(r=>r.json()).then(d=>{
-      if(d.size>0)this.updateTradeSizeUI(d.size);
-    }).catch(()=>{});
-  }
-
-  setup15mToggle(){
-    // Load current state
-    fetch('/api/market-15m').then(r=>r.json()).then(d=>{
-      this.is15mEnabled=d.enabled;
-      this.update15mToggleUI();
-    }).catch(()=>{});
-
-    // Button handlers
-    $$('.market-type-btn').forEach(btn=>{
-      btn.addEventListener('click',()=>{
-        const mode=btn.dataset.market;
-        if(mode==='5m'){this.set15mEnabled(false)}
-        else if(mode==='15m'){this.set15mEnabled(true)}
-        else{this.set15mEnabled(true)} // "both" = enable 15m (5m always runs)
-        // Update active button
-        $$('.market-type-btn').forEach(b=>b.classList.remove('active'));
-        btn.classList.add('active');
-      });
-    });
-  }
-
-  set15mEnabled(enabled){
-    this.is15mEnabled=enabled;
-    if(this.ws&&this.ws.readyState===WebSocket.OPEN){
-      this.ws.send(JSON.stringify({type:'toggle_15m',enabled}));
-    }else{
-      fetch('/api/toggle-15m',{method:'POST',headers:{'Content-Type':'application/json'},
-        body:JSON.stringify({enabled})});
-    }
-    this.update15mToggleUI();
-  }
-
-  update15mToggleUI(){
-    const statusEl=$('#market-15m-status');
-    if(this.is15mEnabled){
-      statusEl.textContent='15dk: Aktif';
-      statusEl.style.color='var(--green)';
-    }else{
-      statusEl.textContent='15dk: Kapali';
-      statusEl.style.color='var(--text3)';
-    }
-  }
-
-  setTradeSize(size){
-    if(this.ws&&this.ws.readyState===WebSocket.OPEN){
-      this.ws.send(JSON.stringify({type:'set_trade_size',size}));
-    }else{
-      fetch('/api/trade-size',{method:'POST',headers:{'Content-Type':'application/json'},
-        body:JSON.stringify({size})});
-    }
-    this.updateTradeSizeUI(size);
-  }
-
-  updateTradeSizeUI(size){
-    this.tradeSize=size;
-    $('#current-size').textContent=`$${size.toFixed(2)}`;
-    $$('.size-btn').forEach(b=>{
-      b.classList.toggle('active',parseFloat(b.dataset.size)===size);
-    });
-    $('#custom-size').value='';
-  }
-
-  /* ── Data Loading ───────────────────────────────────── */
-
-  async loadInitialData(){
-    try{
-      const[klines,trades,stats,status,analytics]=await Promise.all([
-        fetch(`/api/klines?interval=${this.currentInterval}&limit=300`).then(r=>r.json()),
-        fetch('/api/trades?limit=100').then(r=>r.json()),
-        fetch('/api/stats').then(r=>r.json()),
-        fetch('/api/status').then(r=>r.json()),
-        fetch('/api/analytics').then(r=>r.json()),
-      ]);
-      this.setKlines(klines);
-      this.trades=trades;this.stats=stats;this.analytics=analytics;
-      this.renderTrades();this.renderStats(stats);this.renderStatus(status);
-      this.renderAnalytics(analytics);
-    }catch(e){console.error('Load error:',e)}
-  }
-
-  async loadKlines(interval){
-    try{
-      const k=await fetch(`/api/klines?interval=${interval}&limit=300`).then(r=>r.json());
-      this.setKlines(k);
-    }catch(e){}
-  }
-
-  async refreshAnalytics(){
-    try{
-      const[analytics,stats]=await Promise.all([
-        fetch('/api/analytics').then(r=>r.json()),
-        fetch('/api/stats').then(r=>r.json()),
-      ]);
-      this.analytics=analytics;this.stats=stats;
-      this.renderAnalytics(analytics);this.renderStats(stats);
-    }catch(e){}
-  }
-
-  setKlines(klines){
-    if(!klines||!klines.length)return;
-    this.candleSeries.setData(klines.map(k=>({time:k.time,open:k.open,high:k.high,low:k.low,close:k.close})));
-    this.volumeSeries.setData(klines.map(k=>({time:k.time,value:k.volume,
-      color:k.close>=k.open?'rgba(14,203,129,0.3)':'rgba(246,70,93,0.3)'})));
-    this.addTradeMarkers();
-  }
-
-  addTradeMarkers(){
-    if(!this.trades.length)return;
-    const markers=this.trades.filter(t=>t.ts).map(t=>{
-      const isUp=(t.side||'').includes('UP');
-      const ts=typeof t.ts==='string'?Math.floor(new Date(t.ts).getTime()/1000):t.ts;
-      return{time:ts,position:isUp?'belowBar':'aboveBar',
-        color:isUp?'#0ecb81':'#f6465d',shape:isUp?'arrowUp':'arrowDown',text:`#${t.id}`};
-    }).sort((a,b)=>a.time-b.time);
-    try{this.candleSeries.setMarkers(markers)}catch(e){}
-  }
-
-  /* ── WebSocket ──────────────────────────────────────── */
-
-  connectWS(){
-    const proto=location.protocol==='https:'?'wss':'ws';
-    this.ws=new WebSocket(`${proto}://${location.host}/ws`);
-    this.ws.onopen=()=>{this._reconnectDelay=1000};
-    this.ws.onmessage=e=>{try{this.handleMessage(JSON.parse(e.data))}catch(err){}};
-    this.ws.onclose=()=>{setTimeout(()=>{
-      this._reconnectDelay=Math.min(this._reconnectDelay*1.5,10000);this.connectWS()},this._reconnectDelay)};
-  }
-
-  handleMessage(d){
-    switch(d.type){
-      case'price':this.onPrice(d);break;
-      case'market':this.onMarket(d);break;
-      case'market_15m':this.onMarket15m(d);break;
-      case'no_market':this.onNoMarket();break;
-      case'no_market_15m':this.onNoMarket15m();break;
-      case'new_trade':this.onNewTrade(d.trade);break;
-      case'trade_update':this.onTradeUpdate(d.trade);break;
-      case'status':this.renderStatus(d);break;
-      case'trade_size':this.updateTradeSizeUI(d.size);break;
-      case'market_15m_toggle':this.is15mEnabled=d.enabled;this.update15mToggleUI();break;
-    }
-  }
-
-  onPrice(d){
-    this.btcPrice=d.price;
-    $('#s-btc').textContent='$'+d.price.toLocaleString('en-US',{minimumFractionDigits:2,maximumFractionDigits:2});
-    if(this.currentInterval==='1m'){
-      this.candleSeries.update({time:d.time,open:d.open,high:d.high,low:d.low,close:d.close});
-      this.volumeSeries.update({time:d.time,value:d.volume,
-        color:d.close>=d.open?'rgba(14,203,129,0.3)':'rgba(246,70,93,0.3)'});
-    }
-  }
-
-  onMarket(d){
-    $('#no-market').style.display='none';$('#market-content').style.display='block';
-    $('#m-name').textContent=d.question||'';
-    $('#m-up').textContent=d.up_price?.toFixed(3)||'0.500';
-    $('#m-down').textContent=d.down_price?.toFixed(3)||'0.500';
-    $('#m-vol').textContent='$'+Math.round(d.volume||0).toLocaleString();
-    $('#m-liq').textContent='$'+Math.round(d.liquidity||0).toLocaleString();
-    this.marketEndTs=d.end_ts||0;this.marketStartTs=d.start_ts||0;
-    this.updateCountdown();
-    if(d.orderbook)this.renderDepth(d.orderbook);
-  }
-
-  onMarket15m(d){
-    $('#no-market-15m').style.display='none';
-    $('#market-content-15m').style.display='block';
-    $('#m-name-15m').textContent=d.question||'';
-    $('#m-up-15m').textContent=d.up_price?.toFixed(3)||'0.500';
-    $('#m-down-15m').textContent=d.down_price?.toFixed(3)||'0.500';
-    $('#m-vol-15m').textContent='$'+Math.round(d.volume||0).toLocaleString();
-    $('#m-liq-15m').textContent='$'+Math.round(d.liquidity||0).toLocaleString();
-    this.market15mEndTs=d.end_ts||0;this.market15mStartTs=d.start_ts||0;
-    this.updateCountdown();
-    if(d.orderbook)this.renderDepth15m(d.orderbook);
-  }
-
-  onNoMarket15m(){
-    $('#no-market-15m').style.display='block';
-    $('#no-market-15m').textContent='15dk market bekleniyor...';
-    $('#market-content-15m').style.display='none';
-    this.market15mEndTs=0;this.market15mStartTs=0;
-  }
-
-  renderDepth15m(ob){
-    const c=$('#depth-levels-15m');
-    if(!c)return;
-    const bids=(ob.bids||[]).slice(0,5),asks=(ob.asks||[]).slice(0,5);
-    const maxRows=Math.max(bids.length,asks.length,1);
-    let maxSize=0;
-    [...bids,...asks].forEach(l=>{const s=parseFloat(l.size||l[1]||0);if(s>maxSize)maxSize=s});
-    if(!maxSize)maxSize=1;
-    let html='';
-    for(let i=0;i<maxRows;i++){
-      html+='<div class="depth-grid">';
-      if(i<bids.length){const p=parseFloat(bids[i].price||bids[i][0]||0),
-        s=parseFloat(bids[i].size||bids[i][1]||0),w=(s/maxSize*100).toFixed(0);
-        html+=`<div class="depth-level bid"><span class="price">${p.toFixed(3)}</span>
-          <span class="size">${s.toFixed(0)}</span><div class="bar" style="width:${w}%"></div></div>`;
-      }else html+='<div class="depth-level bid"></div>';
-      if(i<asks.length){const p=parseFloat(asks[i].price||asks[i][0]||0),
-        s=parseFloat(asks[i].size||asks[i][1]||0),w=(s/maxSize*100).toFixed(0);
-        html+=`<div class="depth-level ask"><span class="price">${p.toFixed(3)}</span>
-          <span class="size">${s.toFixed(0)}</span><div class="bar" style="width:${w}%"></div></div>`;
-      }else html+='<div class="depth-level ask"></div>';
-      html+='</div>';
-    }
-    c.innerHTML=html;
-  }
-
-  updateCountdown(){
-    // 5m countdown
-    if(this.marketEndTs){
-      const now=Date.now()/1000,remaining=Math.max(0,this.marketEndTs-now);
-      const total=this.marketEndTs-this.marketStartTs,elapsed=total-remaining;
-      const pct=total>0?Math.min(100,(elapsed/total)*100):0;
-      const min=Math.floor(remaining/60),sec=Math.floor(remaining%60);
-      const el=$('#m-countdown');
-      if(remaining<=0){
-        el.textContent='0:00';el.className='countdown urgent';
-        const bar=$('#m-progress');bar.style.width='100%';bar.className='fill late';
-        $('#m-name').textContent=$('#m-name').textContent.split(' ·')[0]+' · Sonuclaniyor...';
-      }else{
-        el.textContent=`${min}:${sec.toString().padStart(2,'0')}`;
-        el.className='countdown'+(remaining<30?' urgent':'');
-        const bar=$('#m-progress');bar.style.width=pct+'%';
-        bar.className='fill '+(pct<50?'early':pct<80?'mid':'late');
-      }
-    }
-    // 15m countdown
-    if(this.market15mEndTs){
-      const now=Date.now()/1000,remaining=Math.max(0,this.market15mEndTs-now);
-      const total=this.market15mEndTs-this.market15mStartTs,elapsed=total-remaining;
-      const pct=total>0?Math.min(100,(elapsed/total)*100):0;
-      const min=Math.floor(remaining/60),sec=Math.floor(remaining%60);
-      const el=$('#m-countdown-15m');
-      if(remaining<=0){
-        el.textContent='0:00';el.className='countdown urgent';
-        const bar=$('#m-progress-15m');bar.style.width='100%';bar.className='fill late';
-      }else{
-        el.textContent=`${min}:${sec.toString().padStart(2,'0')}`;
-        el.className='countdown'+(remaining<60?' urgent':'');
-        const bar=$('#m-progress-15m');bar.style.width=pct+'%';
-        bar.className='fill '+(pct<50?'early':pct<80?'mid':'late');
-      }
-    }
-  }
-
-  onNoMarket(){
-    $('#no-market').style.display='block';
-    $('#no-market').textContent='Yeni market bekleniyor...';
-    $('#market-content').style.display='none';
-    this.marketEndTs=0;this.marketStartTs=0;
-  }
-
-  renderDepth(ob){
-    const c=$('#depth-levels');
-    const bids=(ob.bids||[]).slice(0,6),asks=(ob.asks||[]).slice(0,6);
-    const maxRows=Math.max(bids.length,asks.length,1);
-    let maxSize=0;
-    [...bids,...asks].forEach(l=>{const s=parseFloat(l.size||l[1]||0);if(s>maxSize)maxSize=s});
-    if(!maxSize)maxSize=1;
-    let html='';
-    for(let i=0;i<maxRows;i++){
-      html+='<div class="depth-grid">';
-      if(i<bids.length){const p=parseFloat(bids[i].price||bids[i][0]||0),
-        s=parseFloat(bids[i].size||bids[i][1]||0),w=(s/maxSize*100).toFixed(0);
-        html+=`<div class="depth-level bid"><span class="price">${p.toFixed(3)}</span>
-          <span class="size">${s.toFixed(0)}</span><div class="bar" style="width:${w}%"></div></div>`;
-      }else html+='<div class="depth-level bid"></div>';
-      if(i<asks.length){const p=parseFloat(asks[i].price||asks[i][0]||0),
-        s=parseFloat(asks[i].size||asks[i][1]||0),w=(s/maxSize*100).toFixed(0);
-        html+=`<div class="depth-level ask"><span class="price">${p.toFixed(3)}</span>
-          <span class="size">${s.toFixed(0)}</span><div class="bar" style="width:${w}%"></div></div>`;
-      }else html+='<div class="depth-level ask"></div>';
-      html+='</div>';
-    }
-    c.innerHTML=html;
-  }
-
-  onNewTrade(trade){
-    if(!trade)return;
-    if(this.trades.length&&this.trades[0].id===trade.id)this.trades[0]=trade;
-    else this.trades.unshift(trade);
-    this.renderTrades();this.addTradeMarkers();
-    this._refreshStatsAndAnalytics();
-  }
-
-  onTradeUpdate(trade){
-    if(!trade)return;
-    const idx=this.trades.findIndex(t=>t.id===trade.id);
-    if(idx>=0)this.trades[idx]=trade;
-    else this.trades.unshift(trade);
-    this.renderTrades();
-    this._refreshStatsAndAnalytics();
-  }
-
-  _refreshStatsAndAnalytics(){
-    Promise.all([
-      fetch('/api/stats').then(r=>r.json()),
-      fetch('/api/analytics').then(r=>r.json()),
-    ]).then(([s,a])=>{
-      this.stats=s;this.analytics=a;
-      this.renderStats(s);this.renderAnalytics(a);
-    }).catch(()=>{});
-  }
-
-  /* ── Render Stats ───────────────────────────────────── */
-
-  renderStats(s){
-    if(!s)return;
-    const pnl=s.net_pnl||0,profit=s.total_profit||0,loss=s.total_loss||0;
-    const wr=s.win_rate||0,wins=s.wins||0,losses=s.losses||0;
-    const total=s.total_trades||0,pending=s.pending||0,cost=s.total_cost||0;
-
-    // Wallet
-    const balance=s.current_balance||(1000+pnl);
-    const starting=s.starting_balance||1000;
-    $('#s-wallet').textContent='$'+balance.toLocaleString('en-US',{minimumFractionDigits:2,maximumFractionDigits:2});
-    const walletEl=$('#s-wallet');
-    walletEl.className='stat-value '+(balance>=starting?'gold':'negative');
-    const pnlPct=starting>0?((balance-starting)/starting*100):0;
-    $('#s-wallet-sub').textContent=`Baslangic: $${starting.toLocaleString()} (${pnlPct>=0?'+':''}${pnlPct.toFixed(1)}%)`;
-
-    const pnlEl=$('#s-pnl');
-    pnlEl.textContent=(pnl>=0?'+':'')+`$${pnl.toFixed(2)}`;
-    pnlEl.className='stat-value '+(pnl>=0?'positive':'negative');
-    const tp=s.today_pnl||0;
-    $('#s-pnl-today').textContent=`Bugun: ${tp>=0?'+':''}$${tp.toFixed(2)}`;
-
-    $('#s-profit').textContent='+$'+profit.toFixed(2);
-    $('#s-profit-sub').textContent=`${wins} kazanan islem`;
-    $('#s-loss').textContent='-$'+Math.abs(loss).toFixed(2);
-    $('#s-loss-sub').textContent=`${losses} kaybeden islem`;
-
-    const wrEl=$('#s-winrate');wrEl.textContent=wr.toFixed(1)+'%';
-    wrEl.className='stat-value '+(wr>=50?'positive':wr>0?'negative':'');
-    $('#s-winrate-sub').textContent=`${wins}W / ${losses}L`;
-    $('#s-trades').textContent=total;
-    $('#s-trades-sub').textContent=pending>0?`${pending} beklemede`:`Maliyet: $${cost.toFixed(0)}`;
-  }
-
-  renderStatus(s){
-    if(!s)return;
-    const badge=$('#status-badge'),text=$('#status-text');
-    badge.className='status-badge '+(s.running?'running':'stopped');
-    text.textContent=s.running?'Calisiyor':'Durdu';
-    $('#mode-badge').textContent=s.mode||'PAPER';
-    if(s.trade_size&&s.trade_size!==this.tradeSize)this.updateTradeSizeUI(s.trade_size);
-    if(s.btc_price&&!this.btcPrice){this.btcPrice=s.btc_price;
-      $('#s-btc').textContent='$'+s.btc_price.toLocaleString('en-US',{minimumFractionDigits:2,maximumFractionDigits:2})}
-  }
-
-  /* ── Render Analytics ───────────────────────────────── */
-
-  renderAnalytics(a){
-    if(!a||!a.hourly)return;
-    this.renderFactors(a.win_factors||{},a.loss_factors||{});
-    this.renderHourlyHeatmap(a.hourly||[]);
-    this.renderDeltaBars(a.delta_buckets||[]);
-    this.renderRisk(a);
-    this.renderInsights(a.insights||[]);
-    this.renderPnlChart(a.daily||[]);
-    this.renderStrategyMetrics(a);
-  }
-
-  renderFactorsTo(wf,lf,winId,lossId){
-    const maxAll=Math.max(...Object.values(wf),1,...Object.values(lf),1);
-    const renderGroup=(factors,containerId,type)=>{
-      const el=$(containerId);
-      if(!el)return;
-      const sorted=Object.entries(factors).sort((a,b)=>b[1]-a[1]).slice(0,5);
-      if(!sorted.length){el.innerHTML='<div style="color:var(--text3);font-size:12px">Veri yok</div>';return}
-      el.innerHTML=sorted.map(([key,count])=>{
-        const w=Math.max(8,(count/maxAll)*100);
-        return`<div class="factor-row">
-          <span class="factor-label">${FACTOR_LABELS[key]||key}</span>
-          <div class="factor-bar-bg"><div class="factor-bar ${type}" style="width:${w}%"></div></div>
-          <span class="factor-count">${count}</span></div>`;
-      }).join('');
-    };
-    renderGroup(wf,winId,'win');
-    renderGroup(lf,lossId,'loss');
-  }
-
-  renderFactors(wf,lf){
-    this.renderFactorsTo(wf,lf,'#win-factors','#loss-factors');
-  }
-
-  renderStrategyMetrics(a){
-    // 5m
-    const s5=a.strategy_5m||{};
-    $('#s5m-total').textContent=s5.total||0;
-    const wr5=s5.win_rate||0;
-    const wrEl5=$('#s5m-wr');wrEl5.textContent=wr5.toFixed(1)+'%';
-    wrEl5.className='value '+(wr5>=50?'positive':wr5>0?'negative':'');
-    const pnl5=s5.pnl||0;
-    const pEl5=$('#s5m-pnl');pEl5.textContent=(pnl5>=0?'+':'')+`$${pnl5.toFixed(2)}`;
-    pEl5.className='value '+(pnl5>=0?'positive':'negative');
-    $('#s5m-wl').textContent=`${s5.wins||0}W / ${s5.losses||0}L`;
-    this.renderFactorsTo(s5.win_factors||{},s5.loss_factors||{},'#win-factors-5m','#loss-factors-5m');
-
-    // 15m
-    const s15=a.strategy_15m||{};
-    $('#s15m-total').textContent=s15.total||0;
-    const wr15=s15.win_rate||0;
-    const wrEl15=$('#s15m-wr');wrEl15.textContent=wr15.toFixed(1)+'%';
-    wrEl15.className='value '+(wr15>=50?'positive':wr15>0?'negative':'');
-    const pnl15=s15.pnl||0;
-    const pEl15=$('#s15m-pnl');pEl15.textContent=(pnl15>=0?'+':'')+`$${pnl15.toFixed(2)}`;
-    pEl15.className='value '+(pnl15>=0?'positive':'negative');
-    $('#s15m-wl').textContent=`${s15.wins||0}W / ${s15.losses||0}L`;
-    this.renderFactorsTo(s15.win_factors||{},s15.loss_factors||{},'#win-factors-15m','#loss-factors-15m');
-  }
-
-  renderHourlyHeatmap(hourly){
-    const el=$('#hourly-heatmap');
-    el.innerHTML=hourly.map(h=>{
-      let bg='var(--bg3)';
-      if(h.total>0){
-        if(h.win_rate>=70)bg='rgba(14,203,129,0.4)';
-        else if(h.win_rate>=50)bg='rgba(14,203,129,0.2)';
-        else if(h.win_rate>=30)bg='rgba(246,70,93,0.2)';
-        else bg='rgba(246,70,93,0.4)';
-      }
-      const wrColor=h.total?h.win_rate>=50?'var(--green)':'var(--red)':'var(--text3)';
-      return`<div class="heat-cell" style="background:${bg}" title="${h.hour}:00 UTC - ${h.total} islem, %${h.win_rate} basari, $${h.pnl}">
-        <span class="hour">${h.hour.toString().padStart(2,'0')}</span>
-        ${h.total?`<span class="wr" style="color:${wrColor}">${h.win_rate}%</span>`:''}
-      </div>`;
-    }).join('');
-  }
-
-  renderDeltaBars(buckets){
-    const el=$('#delta-bars');
-    el.innerHTML=buckets.map(b=>{
-      const w=b.total?b.win_rate:0;
-      const color=w>=60?'var(--green)':w>=40?'var(--gold)':'var(--red)';
-      return`<div class="delta-row">
-        <span class="delta-label">${b.label}</span>
-        <div class="delta-bar-container">
-          <div class="delta-bar-track">
-            <div class="delta-bar-fill" style="width:${Math.max(4,w)}%;background:${color}">
-              ${b.total?b.win_rate+'%':''}
-            </div>
-          </div>
-          <span class="delta-count">${b.wins}/${b.total}</span>
-        </div>
-      </div>`;
-    }).join('');
-  }
-
-  renderRisk(a){
-    $('#r-open').textContent=a.open_positions||0;
-    $('#r-dd').textContent='-$'+(a.max_drawdown||0).toFixed(2);
-    $('#r-win-streak').textContent=a.max_win_streak||0;
-    $('#r-loss-streak').textContent=a.max_loss_streak||0;
-  }
-
-  renderInsights(insights){
-    const el=$('#insights-grid');
-    if(!insights.length){el.innerHTML='<div class="empty">Yeterli veri bekleniyor...</div>';return}
-    el.innerHTML=insights.map(i=>`<div class="insight-card ${i.type}">
-      <span class="insight-icon">${ICONS[i.icon]||ICONS.chart}</span>
-      <span class="insight-text">${i.text}</span>
-    </div>`).join('');
-  }
-
-  renderPnlChart(daily){
-    if(!this.pnlSeries||!daily.length)return;
-    const data=daily.map(d=>{
-      const parts=d.date.split('-');
-      return{time:d.date,value:d.cumulative};
-    });
-    this.pnlSeries.setData(data);
-
-    // Switch color if negative
-    const last=data[data.length-1];
-    if(last&&last.value<0){
-      this.pnlSeries.applyOptions({
-        topColor:'rgba(246,70,93,0.3)',bottomColor:'rgba(246,70,93,0.02)',lineColor:'#f6465d',
-      });
-    }else{
-      this.pnlSeries.applyOptions({
-        topColor:'rgba(14,203,129,0.3)',bottomColor:'rgba(14,203,129,0.02)',lineColor:'#0ecb81',
-      });
-    }
-  }
-
-  /* ── Render Trades ──────────────────────────────────── */
-
-  parseMarketLabel(question, strategy){
-    if(!question)return'—';
-    // "Bitcoin Up or Down - February 17, 3:40PM-3:45PM ET" → "5dk 3:40-3:45PM"
-    const m=question.match(/(\d{1,2}:\d{2}[AP]M)-(\d{1,2}:\d{2}[AP]M)\s*(ET)?/i);
-    if(!m)return question.substring(0,20);
-    const start=m[1],end=m[2];
-    // Parse times to detect duration
-    const toMin=s=>{const p=s.match(/(\d+):(\d+)(AM|PM)/i);if(!p)return 0;
-      let h=parseInt(p[1]);const mn=parseInt(p[2]);if(p[3].toUpperCase()==='PM'&&h!==12)h+=12;
-      if(p[3].toUpperCase()==='AM'&&h===12)h=0;return h*60+mn};
-    const dur=toMin(end)-toMin(start);
-    const durLabel=dur>0?`${dur}dk`:'5dk';
-    const is15m=strategy==='btc_15min'||dur===15;
-    const color=is15m?'var(--purple)':'var(--blue)';
-    return `<span style="color:${color};font-weight:600">${durLabel}</span> ${start}-${end}`;
-  }
-  renderTrades(){
-    const tbody=$('#trades-body');
-    const filtered=this.trades.filter(t=>['btc_5min_fast','btc_15min'].includes(t.strategy)||!t.strategy);
-    $('#trade-count').textContent=`${filtered.length} islem`;
-    let html='';
-    for(const t of filtered){
-      const side=t.side||'',isUp=side.includes('UP');
-      const pnl=t.pnl,isWin=pnl>0,isLoss=pnl<0;
-      const isPending=pnl===null||pnl===undefined||pnl===0;
-      const rowClass=isWin?'win':isLoss?'loss':'pending';
-      let ts=t.ts||'';if(typeof ts==='string'&&ts.length>16)ts=ts.substring(0,19).replace('T',' ');
-      const cost=parseFloat(t.cost||0),price=parseFloat(t.price||0),qty=parseFloat(t.qty||0);
-      const marketLabel=this.parseMarketLabel(t.question||'',t.strategy||'');
-      let resultText,resultClass;
-      if(isPending){resultText='Beklemede';resultClass='pending'}
-      else if(isWin){resultText='Kazandi';resultClass='win'}
-      else{resultText='Kaybetti';resultClass='loss'}
-      let pnlText='\u2014',pnlClass='';
-      if(!isPending){pnlText=(pnl>=0?'+':'')+`$${pnl.toFixed(2)}`;pnlClass=pnl>=0?'positive':'negative'}
-      html+=`<tr class="${rowClass}">
-        <td>${t.id||''}</td><td>${ts}</td>
-        <td><span class="market-label">${marketLabel}</span></td>
-        <td><span class="side-badge ${isUp?'up':'down'}">${isUp?'\u2191 UP':'\u2193 DOWN'}</span></td>
-        <td>$${cost.toFixed(2)}</td><td>${price.toFixed(4)}</td><td>${qty.toFixed(2)}</td>
-        <td><span class="result-badge ${resultClass}">${resultText}</span></td>
-        <td class="pnl-cell ${pnlClass}">${pnlText}</td></tr>`;
-    }
-    tbody.innerHTML=html||'<tr><td colspan="9" class="empty">Henuz islem yok</td></tr>';
-  }
-}
-
-const app=new Dashboard();app.init();
-</script>
+<!-- Combined JS (modular sources in static/js/) -->
+<script src="/static/js/all.js?v=7"></script>
 </body>
 </html>

@@ -5,7 +5,7 @@ import logging
 import sqlite3
 from datetime import datetime, timezone
 from statistics import median
-from typing import Iterable, List, Optional, Sequence, Tuple, Union
+from typing import Any, Dict, Iterable, List, Optional, Sequence, Tuple, Union
 
 log = logging.getLogger(__name__)
 
@@ -153,11 +153,73 @@ class TradeDB:
             );
 
             CREATE INDEX IF NOT EXISTS idx_monitoring_ts ON monitoring_metrics(ts);
+
+            CREATE TABLE IF NOT EXISTS arb_cycles (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                ts_open TEXT NOT NULL,
+                ts_close TEXT DEFAULT '',
+                symbol TEXT NOT NULL,
+                timeframe TEXT DEFAULT '15m',
+                market_id TEXT,
+                question TEXT,
+                mode TEXT DEFAULT 'paper',
+                status TEXT DEFAULT 'waiting_fill',
+                entry_price_limit REAL DEFAULT 0.45,
+                bailout_price REAL DEFAULT 0.72,
+                cycle_budget_usd REAL DEFAULT 0,
+                shares_target REAL DEFAULT 0,
+                up_token_id TEXT DEFAULT '',
+                down_token_id TEXT DEFAULT '',
+                up_order_id TEXT DEFAULT '',
+                down_order_id TEXT DEFAULT '',
+                up_fill_shares REAL DEFAULT 0,
+                down_fill_shares REAL DEFAULT 0,
+                cost_usd REAL DEFAULT 0,
+                payout_usd REAL DEFAULT 0,
+                fees_usd REAL DEFAULT 0,
+                pnl_usd REAL DEFAULT 0,
+                lock_skipped INTEGER DEFAULT 0,
+                lock_skip_reason TEXT DEFAULT '',
+                liquidity_reject INTEGER DEFAULT 0,
+                spread_reject INTEGER DEFAULT 0,
+                competition_score REAL DEFAULT 0,
+                dynamic_price_suggested REAL DEFAULT 0,
+                exit_reason TEXT DEFAULT '',
+                notes TEXT DEFAULT ''
+            );
+
+            CREATE TABLE IF NOT EXISTS arb_order_events (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                ts TEXT NOT NULL,
+                cycle_id INTEGER DEFAULT 0,
+                symbol TEXT DEFAULT '',
+                market_id TEXT DEFAULT '',
+                side TEXT DEFAULT '',
+                action TEXT DEFAULT '',
+                order_id TEXT DEFAULT '',
+                price REAL DEFAULT 0,
+                size REAL DEFAULT 0,
+                filled_size REAL DEFAULT 0,
+                remaining_size REAL DEFAULT 0,
+                state TEXT DEFAULT '',
+                message TEXT DEFAULT ''
+            );
+
+            CREATE TABLE IF NOT EXISTS arb_runtime_snapshots (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                ts TEXT NOT NULL,
+                payload_json TEXT NOT NULL
+            );
+
+            CREATE INDEX IF NOT EXISTS idx_arb_cycles_ts ON arb_cycles(ts_open);
+            CREATE INDEX IF NOT EXISTS idx_arb_cycles_symbol_status ON arb_cycles(symbol, status);
+            CREATE INDEX IF NOT EXISTS idx_arb_events_cycle_ts ON arb_order_events(cycle_id, ts);
             """
         )
 
         # Migration-safe for older DB files.
         self._migrate_trades_schema()
+        self._migrate_arb_schema()
         self.conn.commit()
         log.info(f"TradeDB ready: {self.path}")
 
@@ -171,6 +233,13 @@ class TradeDB:
     def _table_columns(self, table: str) -> set:
         rows = self.conn.execute(f"PRAGMA table_info({table})").fetchall()
         return {r[1] for r in rows}
+
+    def _table_exists(self, table: str) -> bool:
+        row = self.conn.execute(
+            "SELECT name FROM sqlite_master WHERE type='table' AND name=?",
+            (table,),
+        ).fetchone()
+        return row is not None
 
     def _ensure_column(self, table: str, column: str, ddl: str):
         cols = self._table_columns(table)
@@ -198,9 +267,60 @@ class TradeDB:
             "fill_ratio": "REAL DEFAULT 0",
             "reject_reason": "TEXT DEFAULT ''",
             "execution_id": "TEXT DEFAULT ''",
+            "redeemed": "INTEGER DEFAULT 0",
+            "condition_id": "TEXT DEFAULT ''",
         }
         for name, ddl in required.items():
             self._ensure_column("trades", name, ddl)
+
+    def _migrate_arb_schema(self):
+        if self._table_exists("arb_cycles"):
+            cycle_required = {
+                "timeframe": "TEXT DEFAULT '15m'",
+                "mode": "TEXT DEFAULT 'paper'",
+                "entry_price_limit": "REAL DEFAULT 0.45",
+                "bailout_price": "REAL DEFAULT 0.72",
+                "cycle_budget_usd": "REAL DEFAULT 0",
+                "shares_target": "REAL DEFAULT 0",
+                "up_token_id": "TEXT DEFAULT ''",
+                "down_token_id": "TEXT DEFAULT ''",
+                "up_order_id": "TEXT DEFAULT ''",
+                "down_order_id": "TEXT DEFAULT ''",
+                "up_fill_shares": "REAL DEFAULT 0",
+                "down_fill_shares": "REAL DEFAULT 0",
+                "cost_usd": "REAL DEFAULT 0",
+                "payout_usd": "REAL DEFAULT 0",
+                "fees_usd": "REAL DEFAULT 0",
+                "pnl_usd": "REAL DEFAULT 0",
+                "lock_skipped": "INTEGER DEFAULT 0",
+                "lock_skip_reason": "TEXT DEFAULT ''",
+                "liquidity_reject": "INTEGER DEFAULT 0",
+                "spread_reject": "INTEGER DEFAULT 0",
+                "competition_score": "REAL DEFAULT 0",
+                "dynamic_price_suggested": "REAL DEFAULT 0",
+                "exit_reason": "TEXT DEFAULT ''",
+                "notes": "TEXT DEFAULT ''",
+            }
+            for name, ddl in cycle_required.items():
+                self._ensure_column("arb_cycles", name, ddl)
+
+        if self._table_exists("arb_order_events"):
+            event_required = {
+                "cycle_id": "INTEGER DEFAULT 0",
+                "symbol": "TEXT DEFAULT ''",
+                "market_id": "TEXT DEFAULT ''",
+                "side": "TEXT DEFAULT ''",
+                "action": "TEXT DEFAULT ''",
+                "order_id": "TEXT DEFAULT ''",
+                "price": "REAL DEFAULT 0",
+                "size": "REAL DEFAULT 0",
+                "filled_size": "REAL DEFAULT 0",
+                "remaining_size": "REAL DEFAULT 0",
+                "state": "TEXT DEFAULT ''",
+                "message": "TEXT DEFAULT ''",
+            }
+            for name, ddl in event_required.items():
+                self._ensure_column("arb_order_events", name, ddl)
 
     def _strategy_clause(self, strategy: StrategyRef) -> Tuple[str, Tuple]:
         if isinstance(strategy, str):
@@ -284,6 +404,523 @@ class TradeDB:
         self.conn.commit()
 
     # ------------------------------------------------------------------
+    # Arbitrage
+    # ------------------------------------------------------------------
+
+    def create_arb_cycle(
+        self,
+        *,
+        symbol: str,
+        market_id: str,
+        question: str = "",
+        mode: str = "paper",
+        status: str = "waiting_fill",
+        timeframe: str = "15m",
+        entry_price_limit: float = 0.45,
+        bailout_price: float = 0.72,
+        cycle_budget_usd: float = 0.0,
+        shares_target: float = 0.0,
+        up_token_id: str = "",
+        down_token_id: str = "",
+        up_order_id: str = "",
+        down_order_id: str = "",
+        up_fill_shares: float = 0.0,
+        down_fill_shares: float = 0.0,
+        cost_usd: float = 0.0,
+        payout_usd: float = 0.0,
+        fees_usd: float = 0.0,
+        pnl_usd: float = 0.0,
+        lock_skipped: bool = False,
+        lock_skip_reason: str = "",
+        liquidity_reject: bool = False,
+        spread_reject: bool = False,
+        competition_score: float = 0.0,
+        dynamic_price_suggested: float = 0.0,
+        exit_reason: str = "",
+        notes: str = "",
+    ) -> int:
+        self._ensure_conn()
+        ts_open = self._now()
+        ts_close = ts_open if status in {"resolved", "bailed", "expired"} else ""
+        cur = self.conn.execute(
+            """
+            INSERT INTO arb_cycles (
+                ts_open, ts_close, symbol, timeframe, market_id, question, mode, status,
+                entry_price_limit, bailout_price, cycle_budget_usd, shares_target,
+                up_token_id, down_token_id, up_order_id, down_order_id,
+                up_fill_shares, down_fill_shares, cost_usd, payout_usd, fees_usd, pnl_usd,
+                lock_skipped, lock_skip_reason, liquidity_reject, spread_reject,
+                competition_score, dynamic_price_suggested, exit_reason, notes
+            )
+            VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+            """,
+            (
+                ts_open,
+                ts_close,
+                symbol,
+                timeframe,
+                market_id,
+                question[:180],
+                mode,
+                status,
+                float(entry_price_limit),
+                float(bailout_price),
+                float(cycle_budget_usd),
+                float(shares_target),
+                up_token_id,
+                down_token_id,
+                up_order_id,
+                down_order_id,
+                float(up_fill_shares),
+                float(down_fill_shares),
+                float(cost_usd),
+                float(payout_usd),
+                float(fees_usd),
+                float(pnl_usd),
+                1 if lock_skipped else 0,
+                lock_skip_reason,
+                1 if liquidity_reject else 0,
+                1 if spread_reject else 0,
+                float(competition_score),
+                float(dynamic_price_suggested),
+                exit_reason,
+                notes,
+            ),
+        )
+        self.conn.commit()
+        return int(cur.lastrowid)
+
+    def log_arb_cycle_reject(
+        self,
+        *,
+        symbol: str,
+        market_id: str,
+        question: str,
+        mode: str,
+        reason: str,
+        lock_skipped: bool = False,
+        liquidity_reject: bool = False,
+        spread_reject: bool = False,
+        dynamic_price_suggested: float = 0.0,
+        competition_score: float = 0.0,
+    ) -> int:
+        return self.create_arb_cycle(
+            symbol=symbol,
+            market_id=market_id,
+            question=question,
+            mode=mode,
+            status="resolved",
+            cycle_budget_usd=0.0,
+            exit_reason=reason,
+            notes=f"reject:{reason}",
+            lock_skipped=lock_skipped,
+            lock_skip_reason=reason if lock_skipped else "",
+            liquidity_reject=liquidity_reject,
+            spread_reject=spread_reject,
+            dynamic_price_suggested=dynamic_price_suggested,
+            competition_score=competition_score,
+        )
+
+    def get_arb_cycle(self, cycle_id: int) -> Optional[dict]:
+        self._ensure_conn()
+        row = self.conn.execute(
+            "SELECT * FROM arb_cycles WHERE id=?",
+            (cycle_id,),
+        ).fetchone()
+        return dict(row) if row else None
+
+    def update_arb_cycle(self, cycle_id: int, **fields: Any):
+        self._ensure_conn()
+        if not fields:
+            return
+
+        allowed = {
+            "ts_close",
+            "status",
+            "entry_price_limit",
+            "bailout_price",
+            "cycle_budget_usd",
+            "shares_target",
+            "up_order_id",
+            "down_order_id",
+            "up_fill_shares",
+            "down_fill_shares",
+            "cost_usd",
+            "payout_usd",
+            "fees_usd",
+            "pnl_usd",
+            "lock_skipped",
+            "lock_skip_reason",
+            "liquidity_reject",
+            "spread_reject",
+            "competition_score",
+            "dynamic_price_suggested",
+            "exit_reason",
+            "notes",
+        }
+
+        updates: Dict[str, Any] = {}
+        for key, value in fields.items():
+            if key not in allowed:
+                continue
+            if key in {"lock_skipped", "liquidity_reject", "spread_reject"}:
+                updates[key] = 1 if bool(value) else 0
+            else:
+                updates[key] = value
+
+        if not updates:
+            return
+
+        clause = ", ".join(f"{k}=?" for k in updates)
+        params = tuple(updates.values()) + (cycle_id,)
+        self.conn.execute(f"UPDATE arb_cycles SET {clause} WHERE id=?", params)
+        self.conn.commit()
+
+    def close_arb_cycle(
+        self,
+        cycle_id: int,
+        *,
+        status: str = "resolved",
+        exit_reason: str = "",
+        pnl_usd: Optional[float] = None,
+        cost_usd: Optional[float] = None,
+        payout_usd: Optional[float] = None,
+        fees_usd: Optional[float] = None,
+        notes_append: str = "",
+    ):
+        self._ensure_conn()
+        row = self.conn.execute(
+            "SELECT notes FROM arb_cycles WHERE id=?",
+            (cycle_id,),
+        ).fetchone()
+
+        notes = ""
+        if row:
+            current = row[0] or ""
+            notes = f"{current} | {notes_append}" if current and notes_append else (notes_append or current)
+
+        fields: Dict[str, Any] = {
+            "status": status,
+            "ts_close": self._now(),
+        }
+        if exit_reason:
+            fields["exit_reason"] = exit_reason
+        if pnl_usd is not None:
+            fields["pnl_usd"] = float(pnl_usd)
+        if cost_usd is not None:
+            fields["cost_usd"] = float(cost_usd)
+        if payout_usd is not None:
+            fields["payout_usd"] = float(payout_usd)
+        if fees_usd is not None:
+            fields["fees_usd"] = float(fees_usd)
+        if row is not None:
+            fields["notes"] = notes
+        self.update_arb_cycle(cycle_id, **fields)
+
+    def open_arb_cycles(self) -> list:
+        self._ensure_conn()
+        rows = self.conn.execute(
+            """
+            SELECT *
+            FROM arb_cycles
+            WHERE status IN ('waiting_fill', 'paired', 'partial_unhedged')
+            ORDER BY id ASC
+            """
+        ).fetchall()
+        return [dict(r) for r in rows]
+
+    def recent_arb_cycles(self, limit: int = 100) -> list:
+        self._ensure_conn()
+        rows = self.conn.execute(
+            """
+            SELECT *
+            FROM arb_cycles
+            ORDER BY id DESC
+            LIMIT ?
+            """,
+            (int(limit),),
+        ).fetchall()
+        return [dict(r) for r in rows]
+
+    def arb_open_cycles_count(self) -> int:
+        self._ensure_conn()
+        row = self.conn.execute(
+            """
+            SELECT COUNT(*)
+            FROM arb_cycles
+            WHERE status IN ('waiting_fill', 'paired', 'partial_unhedged')
+            """
+        ).fetchone()
+        return int(row[0] if row else 0)
+
+    def arb_active_capital_usd(self) -> float:
+        self._ensure_conn()
+        row = self.conn.execute(
+            """
+            SELECT COALESCE(SUM(cycle_budget_usd),0)
+            FROM arb_cycles
+            WHERE status IN ('waiting_fill', 'paired', 'partial_unhedged')
+            """
+        ).fetchone()
+        return float(row[0] if row else 0.0)
+
+    def log_arb_order_event(
+        self,
+        *,
+        cycle_id: int,
+        symbol: str = "",
+        market_id: str = "",
+        side: str = "",
+        action: str = "",
+        order_id: str = "",
+        price: float = 0.0,
+        size: float = 0.0,
+        filled_size: float = 0.0,
+        remaining_size: float = 0.0,
+        state: str = "",
+        message: str = "",
+    ) -> int:
+        self._ensure_conn()
+        cur = self.conn.execute(
+            """
+            INSERT INTO arb_order_events (
+                ts, cycle_id, symbol, market_id, side, action, order_id,
+                price, size, filled_size, remaining_size, state, message
+            ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)
+            """,
+            (
+                self._now(),
+                int(cycle_id),
+                symbol,
+                market_id,
+                side,
+                action,
+                order_id,
+                float(price),
+                float(size),
+                float(filled_size),
+                float(remaining_size),
+                state,
+                message[:300],
+            ),
+        )
+        self.conn.commit()
+        return int(cur.lastrowid)
+
+    def recent_arb_events(self, limit: int = 200, cycle_id: Optional[int] = None) -> list:
+        self._ensure_conn()
+        if cycle_id:
+            rows = self.conn.execute(
+                """
+                SELECT *
+                FROM arb_order_events
+                WHERE cycle_id=?
+                ORDER BY id DESC
+                LIMIT ?
+                """,
+                (int(cycle_id), int(limit)),
+            ).fetchall()
+        else:
+            rows = self.conn.execute(
+                """
+                SELECT *
+                FROM arb_order_events
+                ORDER BY id DESC
+                LIMIT ?
+                """,
+                (int(limit),),
+            ).fetchall()
+        return [dict(r) for r in rows]
+
+    def log_arb_runtime_snapshot(self, payload: dict):
+        self._ensure_conn()
+        self.conn.execute(
+            """
+            INSERT INTO arb_runtime_snapshots (ts, payload_json)
+            VALUES (?,?)
+            """,
+            (self._now(), json.dumps(payload or {}, separators=(",", ":"))),
+        )
+        self.conn.commit()
+
+    def latest_arb_runtime_snapshot(self) -> dict:
+        self._ensure_conn()
+        row = self.conn.execute(
+            """
+            SELECT ts, payload_json
+            FROM arb_runtime_snapshots
+            ORDER BY id DESC
+            LIMIT 1
+            """
+        ).fetchone()
+        if not row:
+            return {}
+        try:
+            payload = json.loads(row["payload_json"] or "{}")
+        except Exception:
+            payload = {}
+        payload["ts"] = row["ts"]
+        return payload
+
+    def recent_arb_runtime_snapshots(self, limit: int = 60) -> list:
+        self._ensure_conn()
+        rows = self.conn.execute(
+            """
+            SELECT ts, payload_json
+            FROM arb_runtime_snapshots
+            ORDER BY id DESC
+            LIMIT ?
+            """,
+            (int(limit),),
+        ).fetchall()
+        out = []
+        for r in rows:
+            try:
+                payload = json.loads(r["payload_json"] or "{}")
+            except Exception:
+                payload = {}
+            payload["ts"] = r["ts"]
+            out.append(payload)
+        out.reverse()
+        return out
+
+    def has_open_directional_position_for_market(self, market_id: str) -> bool:
+        self._ensure_conn()
+        if not market_id:
+            return False
+        row = self.conn.execute(
+            """
+            SELECT COUNT(*)
+            FROM trades
+            WHERE status='open'
+              AND market_id=?
+              AND strategy NOT LIKE 'arb_%'
+            """,
+            (market_id,),
+        ).fetchone()
+        return bool(row and row[0] > 0)
+
+    def arb_summary(self, window_days: int = 7) -> dict:
+        self._ensure_conn()
+        since = f"-{int(window_days)} days"
+        row = self.conn.execute(
+            """
+            SELECT
+                COUNT(*) AS total_cycles,
+                COALESCE(SUM(CASE WHEN status='resolved' THEN 1 ELSE 0 END),0) AS resolved_cycles,
+                COALESCE(SUM(CASE WHEN up_fill_shares > 0 AND down_fill_shares > 0 THEN 1 ELSE 0 END),0) AS paired_cycles,
+                COALESCE(SUM(CASE WHEN status='bailed' THEN 1 ELSE 0 END),0) AS bailed_cycles,
+                COALESCE(SUM(CASE WHEN status='expired' THEN 1 ELSE 0 END),0) AS expired_cycles,
+                COALESCE(SUM(CASE WHEN lock_skipped=1 THEN 1 ELSE 0 END),0) AS lock_skips,
+                COALESCE(SUM(CASE WHEN liquidity_reject=1 THEN 1 ELSE 0 END),0) AS liquidity_rejects,
+                COALESCE(SUM(CASE WHEN spread_reject=1 THEN 1 ELSE 0 END),0) AS spread_rejects,
+                COALESCE(SUM(CASE WHEN pnl_usd > 0 THEN 1 ELSE 0 END),0) AS winning_cycles,
+                COALESCE(SUM(CASE WHEN pnl_usd < 0 THEN 1 ELSE 0 END),0) AS losing_cycles,
+                COALESCE(SUM(CASE WHEN pnl_usd > 0 THEN pnl_usd ELSE 0 END),0) AS total_profit_usd,
+                COALESCE(SUM(CASE WHEN pnl_usd < 0 THEN pnl_usd ELSE 0 END),0) AS total_loss_usd,
+                COALESCE(SUM(pnl_usd),0) AS net_pnl_usd
+            FROM arb_cycles
+            WHERE julianday(ts_open) >= julianday('now', ?)
+            """,
+            (since,),
+        ).fetchone()
+        data = dict(row) if row else {}
+
+        attempts = self.conn.execute(
+            """
+            SELECT COUNT(*)
+            FROM arb_cycles
+            WHERE julianday(ts_open) >= julianday('now', ?)
+              AND lock_skipped=0
+              AND liquidity_reject=0
+              AND spread_reject=0
+              AND cycle_budget_usd > 0
+            """,
+            (since,),
+        ).fetchone()
+        attempts_count = float(attempts[0] if attempts else 0.0)
+        paired = float(data.get("paired_cycles", 0) or 0)
+        bailed = float(data.get("bailed_cycles", 0) or 0)
+
+        open_cycles = self.arb_open_cycles_count()
+        active_capital = self.arb_active_capital_usd()
+
+        data["window_days"] = int(window_days)
+        data["attempted_cycles"] = int(attempts_count)
+        data["fill_rate"] = (paired / attempts_count) if attempts_count > 0 else 0.0
+        data["bailout_rate"] = (bailed / attempts_count) if attempts_count > 0 else 0.0
+        data["open_cycles"] = open_cycles
+        data["active_capital_usd"] = round(active_capital, 4)
+        return data
+
+    def arb_telemetry(self, window_cycles: int = 200) -> dict:
+        self._ensure_conn()
+        rows = self.conn.execute(
+            """
+            SELECT *
+            FROM arb_cycles
+            ORDER BY id DESC
+            LIMIT ?
+            """,
+            (int(window_cycles),),
+        ).fetchall()
+        cycles = [dict(r) for r in rows]
+
+        total = len(cycles)
+        attempts = [
+            c
+            for c in cycles
+            if not c.get("lock_skipped") and not c.get("liquidity_reject") and not c.get("spread_reject")
+            and (c.get("cycle_budget_usd") or 0) > 0
+        ]
+        paired = [c for c in attempts if c.get("status") in {"paired", "resolved"} and c.get("up_fill_shares", 0) > 0 and c.get("down_fill_shares", 0) > 0]
+        bailed = [c for c in attempts if c.get("status") == "bailed"]
+
+        fill_durations = []
+        for c in paired:
+            ts_open = c.get("ts_open") or ""
+            ts_close = c.get("ts_close") or ""
+            if not ts_open or not ts_close:
+                continue
+            try:
+                start = datetime.fromisoformat(ts_open.replace("Z", "+00:00")).timestamp()
+                end = datetime.fromisoformat(ts_close.replace("Z", "+00:00")).timestamp()
+                if end >= start:
+                    fill_durations.append(end - start)
+            except Exception:
+                continue
+
+        suggested_prices = [float(c.get("dynamic_price_suggested") or 0) for c in cycles if float(c.get("dynamic_price_suggested") or 0) > 0]
+        trend = []
+        for snap in self.recent_arb_runtime_snapshots(limit=48):
+            trend.append(
+                {
+                    "ts": snap.get("ts"),
+                    "fill_rate": float(snap.get("fill_rate", 0) or 0),
+                    "bailout_rate": float(snap.get("bailout_rate", 0) or 0),
+                    "suggested_price": float(snap.get("suggested_price", 0) or 0),
+                }
+            )
+
+        attempts_count = len(attempts)
+        return {
+            "window_cycles": int(window_cycles),
+            "total_cycles": total,
+            "attempted_cycles": attempts_count,
+            "fill_rate": (len(paired) / attempts_count) if attempts_count else 0.0,
+            "bailout_rate": (len(bailed) / attempts_count) if attempts_count else 0.0,
+            "liquidity_reject_rate": (sum(1 for c in cycles if c.get("liquidity_reject")) / total) if total else 0.0,
+            "spread_reject_rate": (sum(1 for c in cycles if c.get("spread_reject")) / total) if total else 0.0,
+            "lock_skip_rate": (sum(1 for c in cycles if c.get("lock_skipped")) / total) if total else 0.0,
+            "avg_fill_time_sec": (sum(fill_durations) / len(fill_durations)) if fill_durations else 0.0,
+            "competition_score_avg": (
+                sum(float(c.get("competition_score") or 0) for c in cycles) / total
+            ) if total else 0.0,
+            "suggested_price": (sum(suggested_prices) / len(suggested_prices)) if suggested_prices else 0.0,
+            "trend": trend,
+        }
+
+    # ------------------------------------------------------------------
     # Trades
     # ------------------------------------------------------------------
 
@@ -309,6 +946,7 @@ class TradeDB:
         fill_ratio: float = 1.0,
         reject_reason: str = "",
         execution_id: str = "",
+        condition_id: str = "",
     ) -> int:
         self._ensure_conn()
         cost = price * size
@@ -321,9 +959,9 @@ class TradeDB:
                 expected_net_usd, expected_net_pct,
                 predicted_edge, model_version, decision_reason,
                 expected_gas_usd, entry_latency_ms, fill_ratio,
-                reject_reason, execution_id
+                reject_reason, execution_id, condition_id
             )
-            VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+            VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
             """,
             (
                 self._now(), strategy, market_id, question, side, price, size, cost,
@@ -332,7 +970,7 @@ class TradeDB:
                 expected_net_usd, expected_net_pct,
                 predicted_edge, model_version, decision_reason,
                 expected_gas_usd, entry_latency_ms, fill_ratio,
-                reject_reason, execution_id,
+                reject_reason, execution_id, condition_id,
             ),
         )
         self.conn.commit()
@@ -403,6 +1041,36 @@ class TradeDB:
         params = tuple(fields.values()) + (trade_id,)
         self.conn.execute(f"UPDATE trades SET {set_clause} WHERE id=?", params)
         self.conn.commit()
+
+    def update_trade_status(self, trade_id: int, status: str, sold_price: float = 0.0):
+        """Trade'i sold olarak isaretle (profit taking / early exit).
+        PnL = (sold_price - entry_price) * shares seklinde hesaplanir.
+        """
+        self._ensure_conn()
+        row = self.conn.execute(
+            "SELECT price, size FROM trades WHERE id=?", (trade_id,)
+        ).fetchone()
+        if not row:
+            log.warning(f"update_trade_status: trade #{trade_id} not found")
+            return
+
+        entry_price = row[0]
+        shares = row[1]
+
+        # Early exit PnL: (sell_price - buy_price) * shares
+        pnl = round((sold_price - entry_price) * shares, 2) if sold_price > 0 else 0.0
+
+        self.conn.execute(
+            """UPDATE trades
+               SET status=?, pnl=?, resolved_at=?, exit_reason=?
+               WHERE id=?""",
+            (status, pnl, self._now(), "profit_take", trade_id),
+        )
+        self.conn.commit()
+        log.info(
+            f"Trade #{trade_id} → {status}: entry={entry_price:.4f} "
+            f"sold={sold_price:.4f} PnL=${pnl:+.2f}"
+        )
 
     # ------------------------------------------------------------------
     # Decision Audit
@@ -998,6 +1666,48 @@ class TradeDB:
     def total_trades_count(self) -> int:
         self._ensure_conn()
         r = self.conn.execute("SELECT COUNT(*) FROM trades").fetchone()
+        return r[0] if r else 0
+
+    # ------------------------------------------------------------------
+    # Redeem
+    # ------------------------------------------------------------------
+
+    def unredeemed_winning_trades(self) -> list:
+        """Resolved, winning, unredeemed trade'leri getir."""
+        self._ensure_conn()
+        rows = self.conn.execute(
+            """
+            SELECT id, market_id, condition_id, side, size, pnl, strategy
+            FROM trades
+            WHERE status = 'resolved'
+              AND pnl > 0
+              AND redeemed = 0
+              AND is_paper = 0
+              AND condition_id != ''
+            ORDER BY id ASC
+            """
+        ).fetchall()
+        return [dict(r) for r in rows]
+
+    def mark_redeemed(self, trade_id: int, tx_hash: str = ""):
+        """Trade'i redeem edildi olarak işaretle."""
+        self._ensure_conn()
+        self.conn.execute(
+            "UPDATE trades SET redeemed = 1, notes = notes || ? WHERE id = ?",
+            (f" | redeemed tx={tx_hash}" if tx_hash else " | redeemed", trade_id),
+        )
+        self.conn.commit()
+
+    def pending_redeem_count(self) -> int:
+        """Henüz redeem edilmemiş kazanan trade sayısı."""
+        self._ensure_conn()
+        r = self.conn.execute(
+            """
+            SELECT COUNT(*) FROM trades
+            WHERE status = 'resolved' AND pnl > 0 AND redeemed = 0
+              AND is_paper = 0 AND condition_id != ''
+            """
+        ).fetchone()
         return r[0] if r else 0
 
     # ------------------------------------------------------------------
