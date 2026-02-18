@@ -358,6 +358,50 @@ body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,sans-serif;
 .arb-telemetry-grid span{color:var(--text2)}
 .arb-telemetry-grid b{color:var(--text);font-variant-numeric:tabular-nums}
 
+/* Arb status card gradient */
+.stat-card.arb-status-card.running{
+  background:linear-gradient(135deg,#0d2818 0%,#0b1a14 100%);border-color:var(--green)}
+.stat-card.arb-status-card.stopped{
+  background:linear-gradient(135deg,#2a0e13 0%,#1a0a0d 100%);border-color:var(--red)}
+
+/* Arb status badges (cycle tablosu) */
+.arb-status-badge{display:inline-flex;align-items:center;gap:4px;
+  padding:2px 8px;border-radius:4px;font-size:10px;font-weight:700;
+  letter-spacing:0.5px;text-transform:uppercase}
+.arb-status-badge.resolved{background:rgba(14,203,129,0.12);color:var(--green)}
+.arb-status-badge.paired{background:rgba(14,203,129,0.12);color:var(--green)}
+.arb-status-badge.bailed{background:rgba(246,70,93,0.12);color:var(--red)}
+.arb-status-badge.expired{background:rgba(94,102,115,0.15);color:var(--text2)}
+.arb-status-badge.waiting_fill{background:rgba(30,144,255,0.12);color:var(--blue)}
+.arb-status-badge.partial_unhedged{background:rgba(245,158,11,0.12);color:var(--orange)}
+
+/* Arb exit reason badge */
+.arb-exit-badge{display:inline-block;padding:1px 6px;border-radius:3px;
+  font-size:9px;font-weight:700;letter-spacing:0.5px;
+  background:rgba(255,255,255,0.05);color:var(--text2)}
+
+/* Arb event action badges */
+.arb-action-badge{display:inline-block;padding:1px 6px;border-radius:3px;
+  font-size:9px;font-weight:700}
+.arb-action-badge.place{background:rgba(30,144,255,0.12);color:var(--blue)}
+.arb-action-badge.fill{background:rgba(14,203,129,0.12);color:var(--green)}
+.arb-action-badge.partial{background:rgba(14,203,129,0.08);color:var(--green)}
+.arb-action-badge.cancel{background:rgba(246,70,93,0.12);color:var(--red)}
+.arb-action-badge.resolve{background:rgba(168,85,247,0.12);color:var(--purple)}
+.arb-action-badge.bail{background:rgba(245,158,11,0.12);color:var(--orange)}
+.arb-action-badge.bailout{background:rgba(245,158,11,0.12);color:var(--orange)}
+
+/* Arb cycle table row coloring */
+.trades-table tr.arb-resolved td:first-child{border-left:3px solid var(--green)}
+.trades-table tr.arb-bailed td:first-child{border-left:3px solid var(--red)}
+.trades-table tr.arb-expired td:first-child{border-left:3px solid var(--text3)}
+.trades-table tr.arb-active td:first-child{border-left:3px solid var(--blue)}
+
+/* Arb telemetry renklendirme */
+.arb-telem-good{color:var(--green) !important}
+.arb-telem-warn{color:var(--orange) !important}
+.arb-telem-bad{color:var(--red) !important}
+
 @media(max-width:900px){
   .top-tabs{padding:10px 12px;overflow-x:auto}
   .arb-warning{margin:10px 12px}

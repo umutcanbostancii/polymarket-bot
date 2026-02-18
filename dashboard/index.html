@@ -5,7 +5,7 @@
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>Polymarket BTC Trading Dashboard</title>
 <!-- Combined CSS (modular sources in static/css/) -->
-<link rel="stylesheet" href="/static/css/all.css?v=7">
+<link rel="stylesheet" href="/static/css/all.css?v=8">
 </head>
 <body>
 
@@ -553,15 +553,30 @@
   </div>
 
   <div class="stats-row" id="arb-stats-row">
-    <div class="stat-card">
+    <div class="stat-card arb-status-card" id="arb-status-card">
       <div class="stat-label">Arb Durum</div>
       <div class="stat-value" id="arb-running">Durdu</div>
       <div class="stat-sub" id="arb-running-sub">Process bekliyor</div>
     </div>
     <div class="stat-card">
-      <div class="stat-label">Calisma Modu</div>
+      <div class="stat-label">Mod</div>
       <div class="stat-value" id="arb-mode">PAPER</div>
-      <div class="stat-sub" id="arb-mode-sub">Konfig mode</div>
+      <div class="stat-sub" id="arb-mode-sub">Konfig</div>
+    </div>
+    <div class="stat-card">
+      <div class="stat-label">Net Kar/Zarar</div>
+      <div class="stat-value" id="arb-net-pnl">$0.00</div>
+      <div class="stat-sub" id="arb-net-pnl-sub">7g pencere</div>
+    </div>
+    <div class="stat-card">
+      <div class="stat-label">Fill Rate</div>
+      <div class="stat-value" id="arb-fill-rate-big">0%</div>
+      <div class="stat-sub">Basarili eslesen</div>
+    </div>
+    <div class="stat-card">
+      <div class="stat-label">Aktif Sermaye</div>
+      <div class="stat-value gold" id="arb-active-capital">$0</div>
+      <div class="stat-sub" id="arb-active-capital-sub">0 acik cycle</div>
     </div>
     <div class="stat-card">
       <div class="stat-label">Uptime</div>
@@ -569,19 +584,20 @@
       <div class="stat-sub">Ayrik process</div>
     </div>
     <div class="stat-card">
-      <div class="stat-label">Open Orders</div>
-      <div class="stat-value" id="arb-open-orders">0</div>
-      <div class="stat-sub">Bekleyen bacaklar</div>
+      <div class="stat-label">Ardisik Bail</div>
+      <div class="stat-value" id="arb-consec-bails">0</div>
+      <div class="stat-sub" id="arb-consec-bails-sub">Max: 5</div>
     </div>
-    <div class="stat-card">
-      <div class="stat-label">Active Cycles</div>
-      <div class="stat-value" id="arb-active-cycles">0</div>
-      <div class="stat-sub">Acilmis cycle</div>
+  </div>
+
+  <!-- Arb Scan Pipeline -->
+  <div class="decisions-panel" id="arb-pipeline-panel" style="margin:0 24px 12px">
+    <div class="decisions-header">
+      <span class="title">Arb Scan Pipeline</span>
+      <button class="decisions-toggle" id="arb-pipeline-toggle">&#9660;</button>
     </div>
-    <div class="stat-card">
-      <div class="stat-label">Net PnL</div>
-      <div class="stat-value" id="arb-net-pnl">$0.00</div>
-      <div class="stat-sub" id="arb-net-pnl-sub">7g pencere</div>
+    <div class="decisions-body" id="arb-pipeline-body">
+      <div class="empty">Pipeline verisi bekleniyor...</div>
     </div>
   </div>
 
@@ -641,7 +657,7 @@
           <div class="risk-item"><div class="label">Spread Reject</div><div class="value" id="arb-spread-reject">0</div></div>
           <div class="risk-item"><div class="label">Bail Streak</div><div class="value" id="arb-bail-streak">0</div></div>
         </div>
-        <div class="arb-telemetry-grid">
+        <div class="arb-telemetry-grid" id="arb-telemetry-grid">
           <div><span>Fill Rate</span><b id="arb-fill-rate">0%</b></div>
           <div><span>Bailout Rate</span><b id="arb-bailout-rate">0%</b></div>
           <div><span>Liq Reject Rate</span><b id="arb-liq-reject-rate">0%</b></div>
@@ -661,14 +677,14 @@
     <div class="trades-scroll">
       <table class="trades-table">
         <thead><tr>
-          <th>#</th><th>Acilis</th><th>Sembol</th><th>Market</th><th>Mode</th><th>Durum</th><th>Butce</th><th>Fill</th><th>PnL</th><th>Cikis</th>
+          <th>#</th><th>Acilis</th><th>TR Saati</th><th>Sembol</th><th>Market</th><th>Mode</th><th>Durum</th><th>Butce</th><th>Fill</th><th>PnL</th><th>Cikis</th>
         </tr></thead>
         <tbody id="arb-cycles-body"></tbody>
       </table>
     </div>
   </div>
 
-  <div class="trades-panel" style="margin:0 24px 24px">
+  <div class="trades-panel" style="margin:0 24px 12px">
     <div class="trades-header">
       <span class="title">Arb Event Log</span>
       <span class="count" id="arb-event-count">0 event</span>
@@ -676,10 +692,48 @@
     <div class="trades-scroll">
       <table class="trades-table">
         <thead><tr>
-          <th>#</th><th>Zaman</th><th>Cycle</th><th>Side</th><th>Action</th><th>Price</th><th>Size</th><th>Filled</th><th>State</th><th>Mesaj</th>
+          <th>#</th><th>Zaman</th><th>TR Saati</th><th>Cycle</th><th>Side</th><th>Action</th><th>Price</th><th>Size</th><th>Filled</th><th>State</th><th>Mesaj</th>
         </tr></thead>
         <tbody id="arb-events-body"></tbody>
       </table>
+    </div>
+  </div>
+
+  <!-- Arb Analytics Panels -->
+  <div class="analytics-grid" style="padding:0 24px 24px" id="arb-analytics">
+    <div class="panel">
+      <div class="panel-header"><span class="panel-title">Sembol Performansi</span></div>
+      <div class="panel-body" id="arb-symbol-perf">
+        <div class="empty">Veri bekleniyor...</div>
+      </div>
+    </div>
+    <div class="panel">
+      <div class="panel-header"><span class="panel-title">Risk Metrikleri</span></div>
+      <div class="panel-body">
+        <div class="risk-grid">
+          <div class="risk-item"><div class="label">Circuit Breaker</div><div class="value" id="arb-circuit">Kapali</div></div>
+          <div class="risk-item"><div class="label">Halt Durumu</div><div class="value" id="arb-halted">Normal</div></div>
+          <div class="risk-item"><div class="label">Toplam Cycle</div><div class="value" id="arb-total-cycles">0</div></div>
+          <div class="risk-item"><div class="label">Basari Orani</div><div class="value" id="arb-success-rate">0%</div></div>
+        </div>
+      </div>
+    </div>
+    <div class="panel">
+      <div class="panel-header"><span class="panel-title">7-Gun Ozeti</span></div>
+      <div class="panel-body">
+        <div class="risk-grid">
+          <div class="risk-item"><div class="label">Kazanan</div><div class="value positive" id="arb-winning">0</div></div>
+          <div class="risk-item"><div class="label">Kaybeden</div><div class="value negative" id="arb-losing">0</div></div>
+          <div class="risk-item"><div class="label">Toplam Kar</div><div class="value positive" id="arb-total-profit">$0</div></div>
+          <div class="risk-item"><div class="label">Toplam Zarar</div><div class="value negative" id="arb-total-loss">$0</div></div>
+        </div>
+        <div class="risk-grid">
+          <div class="risk-item"><div class="label">Lock Skip</div><div class="value" id="arb-lock-skip-2">0</div></div>
+          <div class="risk-item"><div class="label">Liq Reject</div><div class="value" id="arb-liq-reject-2">0</div></div>
+          <div class="risk-item"><div class="label">Spread Reject</div><div class="value" id="arb-spread-reject-2">0</div></div>
+          <div class="risk-item"><div class="label">Bail Streak</div><div class="value" id="arb-bail-streak-2">0</div></div>
+        </div>
+      </div>
     </div>
   </div>
 </div>
@@ -756,6 +810,6 @@
 <script src="https://unpkg.com/lightweight-charts@4.1.1/dist/lightweight-charts.standalone.production.js"></script>
 
 <!-- Combined JS (modular sources in static/js/) -->
-<script src="/static/js/all.js?v=7"></script>
+<script src="/static/js/all.js?v=8"></script>
 </body>
 </html>

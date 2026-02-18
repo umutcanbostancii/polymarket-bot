@@ -74,6 +74,9 @@ class ArbLimitEngine:
         self._clob_client = None
         self._runtime: Dict[str, Any] = self._default_runtime()
 
+        self._tick_count = 0
+        self._last_pipeline: List[tuple] = []  # [(step_name, passed, detail), ...]
+
     # ------------------------------------------------------------------
     # Lifecycle
     # ------------------------------------------------------------------
@@ -146,6 +149,15 @@ class ArbLimitEngine:
         if not self._running:
             return
 
+        self._tick_count += 1
+        if self._tick_count % 12 == 1:
+            log.info(
+                "Arb tick #%d | cycles=%d capital=$%.1f bails=%d errors=%d",
+                self._tick_count, len(self._cycles),
+                self.db.arb_active_capital_usd(),
+                self._consecutive_bails, self._consecutive_errors,
+            )
+
         try:
             await self._process_active_cycles()
             if not self._entry_blocked():
@@ -187,6 +199,12 @@ class ArbLimitEngine:
             if isinstance(result, Exception) or not result:
                 continue
             markets.append(result)
+        if self._tick_count % 12 == 1:
+            log.info(
+                "Arb scan: found %d markets (%s)",
+                len(markets),
+                ", ".join(m["symbol"] for m in markets) or "none",
+            )
         return markets
 
     async def _discover_symbol_market(self, symbol: str) -> Optional[dict]:
@@ -301,79 +319,122 @@ class ArbLimitEngine:
 
     async def _maybe_open_cycle(self, market: dict):
         market_id = market["market_id"]
+        symbol = market["symbol"]
+        pipeline: List[tuple] = []
+
         if not market_id:
             return
         if market_id in self._market_cycle_opened:
+            log.debug("Arb skip %s: already cycled", symbol)
             return
         if any(c.market_id == market_id and not c.closed for c in self._cycles.values()):
+            log.debug("Arb skip %s: active cycle exists", symbol)
             return
+
+        pipeline.append(("market_found", True, f"{symbol} {market['question'][:40]}"))
 
         now = time.time()
         since_start = now - float(market["start_ts"])
-        if since_start < float(self._runtime["entry_delay_seconds"]):
+        delay = float(self._runtime["entry_delay_seconds"])
+        cutoff = float(self._runtime["entry_cutoff_seconds"])
+        if since_start < delay:
+            log.debug("Arb skip %s: entry delay %.0fs < %ds", symbol, since_start, delay)
+            pipeline.append(("timing", False, f"elapsed={since_start:.0f}s < delay={delay:.0f}s"))
+            self._last_pipeline = pipeline
             return
-        if since_start > float(self._runtime["entry_cutoff_seconds"]):
+        if since_start > cutoff:
+            log.debug("Arb skip %s: cutoff %.0fs > %ds", symbol, since_start, cutoff)
+            pipeline.append(("timing", False, f"elapsed={since_start:.0f}s > cutoff={cutoff:.0f}s"))
+            self._last_pipeline = pipeline
             return
+        pipeline.append(("timing", True, f"elapsed={since_start:.0f}s delay={delay:.0f} cutoff={cutoff:.0f}"))
 
         open_cycles = self.db.arb_open_cycles_count()
-        if open_cycles >= int(self._runtime["max_open_cycles"]):
+        max_cycles = int(self._runtime["max_open_cycles"])
+        if open_cycles >= max_cycles:
+            log.info("Arb skip: max cycles (%d/%d)", open_cycles, max_cycles)
+            pipeline.append(("max_cycles", False, f"{open_cycles}/{max_cycles}"))
+            self._last_pipeline = pipeline
             return
+        pipeline.append(("max_cycles", True, f"{open_cycles}/{max_cycles}"))
+
         active_capital = self.db.arb_active_capital_usd()
-        if active_capital + float(self._runtime["cycle_budget_usd"]) > float(self._runtime["max_active_capital_usd"]):
+        budget = float(self._runtime["cycle_budget_usd"])
+        max_capital = float(self._runtime["max_active_capital_usd"])
+        if active_capital + budget > max_capital:
+            log.info("Arb skip: max capital ($%.0f+$%.0f > $%.0f)", active_capital, budget, max_capital)
+            pipeline.append(("max_capital", False, f"${active_capital:.0f}+${budget:.0f} > ${max_capital:.0f}"))
+            self._last_pipeline = pipeline
             return
+        pipeline.append(("max_capital", True, f"${active_capital:.0f}/${max_capital:.0f}"))
 
         if bool(self._runtime["lock_main_strategy"]) and self.db.has_open_directional_position_for_market(market_id):
             self._log_reject_once(
                 market_id=market_id,
                 reason_key="lock",
-                symbol=market["symbol"],
+                symbol=symbol,
                 question=market["question"],
                 reason="lock_main_open_position",
                 lock_skipped=True,
             )
+            pipeline.append(("lock_check", False, "main strategy has open position"))
+            self._last_pipeline = pipeline
             return
+        pipeline.append(("lock_check", True, "no conflict"))
 
         up_book, down_book = await asyncio.gather(
             self._get_orderbook(market["up_token_id"]),
             self._get_orderbook(market["down_token_id"]),
         )
         if not up_book or not down_book:
-            log.debug("Arb skip %s: no orderbook", market["symbol"])
+            log.debug("Arb skip %s: no orderbook", symbol)
+            pipeline.append(("orderbook", False, "no orderbook data"))
+            self._last_pipeline = pipeline
             return
+        pipeline.append(("orderbook", True, "both sides available"))
 
         max_spread = max(self._spread_pct(up_book), self._spread_pct(down_book))
-        if max_spread > float(self._runtime["max_spread_pct"]):
+        max_spread_limit = float(self._runtime["max_spread_pct"])
+        if max_spread > max_spread_limit:
             self._log_reject_once(
                 market_id=market_id,
                 reason_key="spread",
-                symbol=market["symbol"],
+                symbol=symbol,
                 question=market["question"],
                 reason="spread_reject",
                 spread_reject=True,
             )
+            pipeline.append(("spread", False, f"{max_spread*100:.1f}% > max {max_spread_limit*100:.1f}%"))
+            self._last_pipeline = pipeline
             return
+        pipeline.append(("spread", True, f"{max_spread*100:.1f}% <= {max_spread_limit*100:.1f}%"))
 
         entry_limit = float(self._runtime["entry_price_limit"])
         min_liq = float(self._runtime["min_liquidity_usd"])
 
-        # Liquidity check: total orderbook depth (not just at entry price)
-        # Limit orders sit on the book and wait for fills — we need the market
-        # to be active, not necessarily have existing asks at our limit price.
         total_depth_up = self._total_ask_depth(up_book)
         total_depth_down = self._total_ask_depth(down_book)
-        if min(total_depth_up, total_depth_down) < min_liq:
+        min_depth = min(total_depth_up, total_depth_down)
+        if min_depth < min_liq:
             self._log_reject_once(
                 market_id=market_id,
                 reason_key="liquidity",
-                symbol=market["symbol"],
+                symbol=symbol,
                 question=market["question"],
                 reason="liquidity_reject",
                 liquidity_reject=True,
             )
+            pipeline.append(("liquidity", False, f"${min_depth:.0f} < min ${min_liq:.0f}"))
+            self._last_pipeline = pipeline
             return
+        pipeline.append(("liquidity", True, f"${min_depth:.0f} >= ${min_liq:.0f}"))
+
+        pipeline.append(("entry_price", True, f"limit={entry_limit:.4f}"))
 
         competition_score = (self._competition_score(up_book, entry_limit) + self._competition_score(down_book, entry_limit)) / 2.0
         suggested_price = self._suggested_price(competition_score)
+        pipeline.append(("competition", True, f"score={competition_score:.2f} suggested={suggested_price:.4f}"))
+        self._last_pipeline = pipeline
 
         per_leg_budget = float(self._runtime["cycle_budget_usd"]) / 2.0
         shares_target = max(5.0 if self.mode == "live" else 1.0, round(per_leg_budget / max(entry_limit, 0.01), 2))
@@ -427,6 +488,11 @@ class ArbLimitEngine:
         self._cycles[cycle.cycle_id] = cycle
         self._market_cycle_opened.add(market_id)
         self._consecutive_bails = 0
+        log.info(
+            "Arb cycle #%s OPENED: %s %s limit=%.4f shares=%.2f budget=$%.2f",
+            cycle.cycle_id, market["symbol"], market["question"][:60],
+            entry_limit, shares_target, float(self._runtime["cycle_budget_usd"]),
+        )
 
     def _log_reject_once(
         self,
@@ -557,6 +623,13 @@ class ArbLimitEngine:
         else:
             await self._poll_live_fills(cycle)
 
+        elapsed = now - cycle.created_at
+        log.info(
+            "Arb cycle #%d poll: up=%.1f/%.1f down=%.1f/%.1f status=%s elapsed=%.0fs",
+            cycle.cycle_id, cycle.up_fill_shares, cycle.shares_target,
+            cycle.down_fill_shares, cycle.shares_target, cycle.status, elapsed,
+        )
+
         # Persist rolling fills/state
         self.db.update_arb_cycle(
             cycle.cycle_id,
@@ -635,6 +708,10 @@ class ArbLimitEngine:
             cycle.up_fill_shares = cycle.shares_target
             cycle.up_avg_fill_price = up_best_ask
             cycle.up_fill_cost += fill_qty * up_best_ask
+            log.info(
+                "Arb PAPER FILL cycle #%d UP: price=%.4f shares=%.1f",
+                cycle.cycle_id, up_best_ask, fill_qty,
+            )
             self.db.log_arb_order_event(
                 cycle_id=cycle.cycle_id,
                 symbol=cycle.symbol,
@@ -655,6 +732,10 @@ class ArbLimitEngine:
             cycle.down_fill_shares = cycle.shares_target
             cycle.down_avg_fill_price = down_best_ask
             cycle.down_fill_cost += fill_qty * down_best_ask
+            log.info(
+                "Arb PAPER FILL cycle #%d DOWN: price=%.4f shares=%.1f",
+                cycle.cycle_id, down_best_ask, fill_qty,
+            )
             self.db.log_arb_order_event(
                 cycle_id=cycle.cycle_id,
                 symbol=cycle.symbol,
@@ -733,10 +814,15 @@ class ArbLimitEngine:
 
         matched = min(cycle.up_fill_shares, cycle.down_fill_shares)
         unmatched = abs(cycle.up_fill_shares - cycle.down_fill_shares)
+        cost = cycle.up_fill_cost + cycle.down_fill_cost
 
         paired_pnl = self._paired_locked_pnl(cycle, matched_shares=matched) if matched > 0 else 0.0
 
         if matched <= 0 and unmatched <= 0:
+            log.info(
+                "Arb cycle #%d CLOSED: reason=%s status=expired pnl=$0.00 cost=$%.2f",
+                cycle.cycle_id, reason, cost,
+            )
             self.db.close_arb_cycle(
                 cycle.cycle_id,
                 status="expired",
@@ -753,6 +839,10 @@ class ArbLimitEngine:
         if unmatched > 0:
             bailout_pnl, bailout_proceeds, bailout_msg = await self._bailout_unhedged(cycle, unmatched)
             total_pnl = paired_pnl + bailout_pnl
+            log.info(
+                "Arb cycle #%d CLOSED: reason=%s status=bailed pnl=$%.4f cost=$%.2f",
+                cycle.cycle_id, reason, total_pnl, cost,
+            )
             self.db.close_arb_cycle(
                 cycle.cycle_id,
                 status="bailed",
@@ -859,6 +949,10 @@ class ArbLimitEngine:
             "halt_reason": self._halt_reason,
             "ws_connected": self._ws_connected,
             "updated_at": datetime.now(timezone.utc).isoformat(),
+            "pipeline": [
+                {"step": s[0], "passed": s[1], "detail": s[2]}
+                for s in self._last_pipeline
+            ],
         }
         self.db.log_arb_runtime_snapshot(snap)
 

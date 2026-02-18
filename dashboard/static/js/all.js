@@ -1034,6 +1034,7 @@ Dashboard.prototype.refreshAnalytics=async function(){
 };
 
 Dashboard.prototype.setupArbControls=function(){
+  this.setupArbPipelineToggle();
   const startBtn=$('#arb-start-btn');
   const stopBtn=$('#arb-stop-btn');
   const saveBtn=$('#arb-save-config-btn');
@@ -1152,6 +1153,9 @@ Dashboard.prototype.refreshArbData=async function(){
 
 Dashboard.prototype.renderArbStatus=function(s){
   const running=!!s.running;
+  // Status card gradient
+  const card=$('#arb-status-card');
+  if(card){card.className='stat-card arb-status-card '+(running?'running':'stopped')}
   const runningEl=$('#arb-running');
   if(runningEl){
     runningEl.textContent=running?'Calisiyor':'Durdu';
@@ -1161,10 +1165,40 @@ Dashboard.prototype.renderArbStatus=function(s){
   if(subEl)subEl.textContent=running?`PID: ${s.pid||'-'}`:'Process bekliyor';
   if($('#arb-mode'))$('#arb-mode').textContent=(s.mode||s.configured_mode||'paper').toUpperCase();
   if($('#arb-mode-sub'))$('#arb-mode-sub').textContent=`Config: ${(s.configured_mode||'paper').toUpperCase()}`;
+  // Net PnL with color
+  const pnl=s.net_pnl_usd||0;
+  const pnlEl=$('#arb-net-pnl');
+  if(pnlEl){pnlEl.textContent=(pnl>=0?'+':'')+`$${pnl.toFixed(2)}`;
+    pnlEl.className='stat-value '+(pnl>=0?'positive':'negative');}
+  // Fill rate big
+  const fr=(s.fill_rate||0)*100;
+  const frEl=$('#arb-fill-rate-big');
+  if(frEl){frEl.textContent=fr.toFixed(1)+'%';
+    frEl.className='stat-value '+(fr>50?'positive':fr>20?'':'negative');}
+  // Active capital
+  const ac=s.active_capital_usd||0;
+  if($('#arb-active-capital'))$('#arb-active-capital').textContent='$'+ac.toFixed(0);
+  if($('#arb-active-capital-sub'))$('#arb-active-capital-sub').textContent=`${s.active_cycles||0} acik cycle`;
+  // Uptime
   if($('#arb-uptime'))$('#arb-uptime').textContent=this.fmtArbDuration(s.uptime_seconds||0);
-  if($('#arb-open-orders'))$('#arb-open-orders').textContent=(s.open_orders??0);
-  if($('#arb-active-cycles'))$('#arb-active-cycles').textContent=(s.active_cycles??0);
-  if($('#arb-net-pnl'))$('#arb-net-pnl').textContent=((s.net_pnl_usd||0)>=0?'+':'')+`$${(s.net_pnl_usd||0).toFixed(2)}`;
+  // Consecutive bails
+  const cb=s.consecutive_bails||0;
+  const cbEl=$('#arb-consec-bails');
+  if(cbEl){cbEl.textContent=cb;
+    cbEl.className='stat-value '+(cb>3?'negative':cb>0?'':'positive');}
+  // Circuit breaker / halted
+  if($('#arb-circuit')){
+    const co=!!s.circuit_open;
+    $('#arb-circuit').textContent=co?'ACIK':'Kapali';
+    $('#arb-circuit').className='value '+(co?'negative':'positive');
+  }
+  if($('#arb-halted')){
+    const h=!!s.halted;
+    $('#arb-halted').textContent=h?(s.halt_reason||'Durduruldu'):'Normal';
+    $('#arb-halted').className='value '+(h?'negative':'positive');
+  }
+  // Pipeline
+  if(s.pipeline)this.renderArbPipeline(s.pipeline);
 };
 
 Dashboard.prototype.renderArbSummary=function(s){
@@ -1172,18 +1206,57 @@ Dashboard.prototype.renderArbSummary=function(s){
   if($('#arb-liquidity-reject'))$('#arb-liquidity-reject').textContent=(s.liquidity_rejects??0);
   if($('#arb-spread-reject'))$('#arb-spread-reject').textContent=(s.spread_rejects??0);
   if($('#arb-bail-streak'))$('#arb-bail-streak').textContent=(s.bailed_cycles??0);
-  if($('#arb-net-pnl'))$('#arb-net-pnl').textContent=((s.net_pnl_usd||0)>=0?'+':'')+`$${(s.net_pnl_usd||0).toFixed(2)}`;
+  const pnl=s.net_pnl_usd||0;
+  const pnlEl=$('#arb-net-pnl');
+  if(pnlEl){pnlEl.textContent=(pnl>=0?'+':'')+`$${pnl.toFixed(2)}`;
+    pnlEl.className='stat-value '+(pnl>=0?'positive':'negative');}
   if($('#arb-net-pnl-sub'))$('#arb-net-pnl-sub').textContent=`Cycles: ${s.total_cycles||0} | Attempts: ${s.attempted_cycles||0}`;
+  // 7-gun ozeti paneli
+  const totalC=s.total_cycles||0;
+  const resolved=s.resolved_cycles||0;
+  const bailed=s.bailed_cycles||0;
+  if($('#arb-total-cycles'))$('#arb-total-cycles').textContent=totalC;
+  if($('#arb-success-rate')){
+    const sr=totalC>0?((resolved/totalC)*100):0;
+    const srEl=$('#arb-success-rate');
+    srEl.textContent=sr.toFixed(1)+'%';
+    srEl.className='value '+(sr>=50?'positive':sr>0?'negative':'');
+  }
+  if($('#arb-winning'))$('#arb-winning').textContent=resolved;
+  if($('#arb-losing'))$('#arb-losing').textContent=bailed;
+  const totalProfit=s.total_profit_usd||0;
+  const totalLoss=s.total_loss_usd||0;
+  if($('#arb-total-profit'))$('#arb-total-profit').textContent='+$'+totalProfit.toFixed(2);
+  if($('#arb-total-loss'))$('#arb-total-loss').textContent='-$'+Math.abs(totalLoss).toFixed(2);
+  // duplicate risk items in 7-gun panel
+  if($('#arb-lock-skip-2'))$('#arb-lock-skip-2').textContent=(s.lock_skips??0);
+  if($('#arb-liq-reject-2'))$('#arb-liq-reject-2').textContent=(s.liquidity_rejects??0);
+  if($('#arb-spread-reject-2'))$('#arb-spread-reject-2').textContent=(s.spread_rejects??0);
+  if($('#arb-bail-streak-2'))$('#arb-bail-streak-2').textContent=(s.bailed_cycles??0);
 };
 
 Dashboard.prototype.renderArbTelemetry=function(t){
   const pct=v=>`${((v||0)*100).toFixed(1)}%`;
-  if($('#arb-fill-rate'))$('#arb-fill-rate').textContent=pct(t.fill_rate);
-  if($('#arb-bailout-rate'))$('#arb-bailout-rate').textContent=pct(t.bailout_rate);
-  if($('#arb-liq-reject-rate'))$('#arb-liq-reject-rate').textContent=pct(t.liquidity_reject_rate);
-  if($('#arb-lock-skip-rate'))$('#arb-lock-skip-rate').textContent=pct(t.lock_skip_rate);
+  const fillRate=(t.fill_rate||0)*100;
+  const frEl=$('#arb-fill-rate');
+  if(frEl){frEl.textContent=pct(t.fill_rate);
+    frEl.className=fillRate>40?'arb-telem-good':fillRate>15?'arb-telem-warn':'arb-telem-bad';}
+  const bailRate=(t.bailout_rate||0)*100;
+  const brEl=$('#arb-bailout-rate');
+  if(brEl){brEl.textContent=pct(t.bailout_rate);
+    brEl.className=bailRate<30?'arb-telem-good':bailRate<60?'arb-telem-warn':'arb-telem-bad';}
+  const lrRate=(t.liquidity_reject_rate||0)*100;
+  const lrEl=$('#arb-liq-reject-rate');
+  if(lrEl){lrEl.textContent=pct(t.liquidity_reject_rate);
+    lrEl.className=lrRate<20?'arb-telem-good':lrRate<50?'arb-telem-warn':'arb-telem-bad';}
+  const lsEl=$('#arb-lock-skip-rate');
+  if(lsEl)lsEl.textContent=pct(t.lock_skip_rate);
   if($('#arb-avg-fill-time'))$('#arb-avg-fill-time').textContent=this.fmtArbDuration(t.avg_fill_time_sec||0);
   if($('#arb-suggested-price'))$('#arb-suggested-price').textContent=(t.suggested_price||0.45).toFixed(3);
+  // Update fill rate big card too
+  const frBig=$('#arb-fill-rate-big');
+  if(frBig){frBig.textContent=fillRate.toFixed(1)+'%';
+    frBig.className='stat-value '+(fillRate>50?'positive':fillRate>20?'':'negative');}
 };
 
 Dashboard.prototype.renderArbCycles=function(rows){
@@ -1195,21 +1268,29 @@ Dashboard.prototype.renderArbCycles=function(rows){
     const pnl=parseFloat(r.pnl_usd||0);
     const pnlClass=pnl>0?'positive':pnl<0?'negative':'';
     const status=(r.status||'').toLowerCase();
+    const rowClass=status==='resolved'?'arb-resolved':status==='bailed'?'arb-bailed':
+      status==='expired'?'arb-expired':'arb-active';
     const fill=`${(r.up_fill_shares||0).toFixed(1)} / ${(r.down_fill_shares||0).toFixed(1)}`;
-    html+=`<tr>
+    const modeTag=(r.mode||'paper').toLowerCase()==='live'?
+      '<span class="mode-tag live">LIVE</span>':'<span class="mode-tag paper">PAPER</span>';
+    const question=(r.question||'').slice(0,35);
+    const ts=(r.ts_open||'').replace('T',' ').slice(0,19);
+    const trTime=toTRTime(r.ts_open||'');
+    html+=`<tr class="${rowClass}">
       <td>${r.id||''}</td>
-      <td>${(r.ts_open||'').replace('T',' ').slice(0,19)}</td>
+      <td>${ts}</td>
+      <td class="tr-time">${trTime}</td>
       <td>${r.symbol||''}</td>
-      <td>${(r.market_id||'').slice(0,10)}...</td>
-      <td>${(r.mode||'paper').toUpperCase()}</td>
-      <td>${status}</td>
+      <td title="${r.question||''}">${question||((r.market_id||'').slice(0,10)+'...')}</td>
+      <td>${modeTag}</td>
+      <td><span class="arb-status-badge ${status}">${status}</span></td>
       <td>$${(r.cycle_budget_usd||0).toFixed(2)}</td>
       <td>${fill}</td>
-      <td class="${pnlClass}">${pnl>=0?'+':''}$${pnl.toFixed(2)}</td>
-      <td>${r.exit_reason||''}</td>
+      <td class="pnl-cell ${pnlClass}">${pnl>=0?'+':''}$${pnl.toFixed(4)}</td>
+      <td><span class="arb-exit-badge">${r.exit_reason||'\u2014'}</span></td>
     </tr>`;
   });
-  body.innerHTML=html||'<tr><td colspan="10" class="empty">Arb cycle yok</td></tr>';
+  body.innerHTML=html||'<tr><td colspan="11" class="empty">Arb cycle yok</td></tr>';
 };
 
 Dashboard.prototype.renderArbEvents=function(rows){
@@ -1218,20 +1299,27 @@ Dashboard.prototype.renderArbEvents=function(rows){
   if($('#arb-event-count'))$('#arb-event-count').textContent=`${rows.length} event`;
   let html='';
   rows.forEach(r=>{
+    const action=(r.action||'').toLowerCase();
+    const side=(r.side||'').toUpperCase();
+    const sideClass=side.includes('UP')?'up':side.includes('DOWN')?'down':'';
+    const state=(r.state||'').toLowerCase();
+    const ts=(r.ts||'').replace('T',' ').slice(0,19);
+    const trTime=toTRTime(r.ts||'');
     html+=`<tr>
       <td>${r.id||''}</td>
-      <td>${(r.ts||'').replace('T',' ').slice(0,19)}</td>
+      <td>${ts}</td>
+      <td class="tr-time">${trTime}</td>
       <td>${r.cycle_id||''}</td>
-      <td>${r.side||''}</td>
-      <td>${r.action||''}</td>
+      <td>${side?`<span class="side-badge ${sideClass}">${side}</span>`:'\u2014'}</td>
+      <td><span class="arb-action-badge ${action}">${action.toUpperCase()}</span></td>
       <td>${(r.price||0).toFixed(4)}</td>
       <td>${(r.size||0).toFixed(2)}</td>
       <td>${(r.filled_size||0).toFixed(2)}</td>
-      <td>${r.state||''}</td>
+      <td><span class="arb-status-badge ${state}">${state}</span></td>
       <td>${r.message||''}</td>
     </tr>`;
   });
-  body.innerHTML=html||'<tr><td colspan="10" class="empty">Arb event yok</td></tr>';
+  body.innerHTML=html||'<tr><td colspan="11" class="empty">Arb event yok</td></tr>';
 };
 
 Dashboard.prototype.setupManualTrade=function(){
@@ -1525,6 +1613,52 @@ Dashboard.prototype.renderDecisionsPipeline=function(){
       btn.style.borderColor=isActive?color:'';
     });
   }
+};
+
+// ── Arb Pipeline Render ──────────────────────────────────
+
+const ARB_PIPELINE_LABELS={
+  market_found:'Market',timing:'Timing',max_cycles:'Max Cycles',
+  max_capital:'Sermaye',lock_check:'Lock',orderbook:'Orderbook',
+  spread:'Spread',liquidity:'Likidite',entry_price:'Fiyat',competition:'Rekabet'
+};
+
+Dashboard.prototype.renderArbPipeline=function(pipeline){
+  const body=$('#arb-pipeline-body');
+  if(!body)return;
+  if(!pipeline||!pipeline.length){
+    body.innerHTML='<div class="empty">Pipeline verisi bekleniyor...</div>';
+    return;
+  }
+  let html='<div class="pipeline-steps">';
+  pipeline.forEach((s,i)=>{
+    const passed=!!s.passed;
+    const icon=passed?'\u2714':'\u2718';
+    const cls=passed?'pass':'fail';
+    const label=ARB_PIPELINE_LABELS[s.step]||s.step;
+    const detail=s.detail?`<span class="step-detail" title="${s.detail}">${s.detail}</span>`:'';
+    html+=`<div class="pipeline-step ${cls}">`;
+    html+=`<span class="step-icon">${icon}</span>`;
+    html+=`<span class="step-label">${label}</span>`;
+    html+=detail;
+    html+=`</div>`;
+    if(i<pipeline.length-1)html+=`<span class="step-arrow">\u25B8</span>`;
+  });
+  html+='</div>';
+  body.innerHTML=html;
+};
+
+Dashboard.prototype.setupArbPipelineToggle=function(){
+  const btn=$('#arb-pipeline-toggle');
+  if(!btn)return;
+  let collapsed=false;
+  btn.addEventListener('click',()=>{
+    collapsed=!collapsed;
+    const body=$('#arb-pipeline-body');
+    if(body)body.classList.toggle('collapsed',collapsed);
+    btn.classList.toggle('collapsed',collapsed);
+    btn.innerHTML=collapsed?'\u25B6':'\u25BC';
+  });
 };
 
 const app=new Dashboard();
