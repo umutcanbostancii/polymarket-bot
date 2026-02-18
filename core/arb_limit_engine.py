@@ -338,6 +338,7 @@ class ArbLimitEngine:
             self._get_orderbook(market["down_token_id"]),
         )
         if not up_book or not down_book:
+            log.debug("Arb skip %s: no orderbook", market["symbol"])
             return
 
         max_spread = max(self._spread_pct(up_book), self._spread_pct(down_book))
@@ -353,10 +354,14 @@ class ArbLimitEngine:
             return
 
         entry_limit = float(self._runtime["entry_price_limit"])
-        liq_up = self._liquidity_at_or_below(up_book, entry_limit)
-        liq_down = self._liquidity_at_or_below(down_book, entry_limit)
         min_liq = float(self._runtime["min_liquidity_usd"])
-        if min(liq_up, liq_down) < min_liq:
+
+        # Liquidity check: total orderbook depth (not just at entry price)
+        # Limit orders sit on the book and wait for fills — we need the market
+        # to be active, not necessarily have existing asks at our limit price.
+        total_depth_up = self._total_ask_depth(up_book)
+        total_depth_down = self._total_ask_depth(down_book)
+        if min(total_depth_up, total_depth_down) < min_liq:
             self._log_reject_once(
                 market_id=market_id,
                 reason_key="liquidity",
@@ -943,6 +948,21 @@ class ArbLimitEngine:
         if mid <= 0:
             return 1.0
         return (ask - bid) / mid
+
+    @staticmethod
+    def _total_ask_depth(orderbook: dict) -> float:
+        """Total USD depth on the ask side of the orderbook."""
+        asks = orderbook.get("asks") or []
+        total = 0.0
+        for a in asks:
+            try:
+                price = float(a.get("price", 0.0))
+                size = float(a.get("size", 0.0))
+            except Exception:
+                continue
+            if price > 0 and size > 0:
+                total += price * size
+        return total
 
     def _liquidity_at_or_below(self, orderbook: dict, price_limit: float) -> float:
         asks = orderbook.get("asks") or []
