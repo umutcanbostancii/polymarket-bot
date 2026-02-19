@@ -15,7 +15,7 @@ class Executor:
         self._clob_client = None
 
     def _get_clob_client(self):
-        """Lazy-init py-clob-client for live trading."""
+        """Lazy-init py-clob-client for live trading (Gnosis Safe proxy)."""
         if self._clob_client is not None:
             return self._clob_client
 
@@ -28,6 +28,8 @@ class Executor:
                 self.cfg.CLOB_API,
                 key=self.cfg.POLY_PRIVATE_KEY,
                 chain_id=137,
+                signature_type=2,  # Gnosis Safe proxy
+                funder=self.cfg.POLY_FUNDER,
             )
             # Derive or use existing API creds
             if self.cfg.POLY_API_KEY:
@@ -90,10 +92,25 @@ class Executor:
             return None
 
         import math
-        shares = math.ceil(size_usd / price * 100) / 100  # yukarı yuvarla, min $1 notional
+        # Polymarket requires 0.01 tick size
+        price = math.floor(price * 100) / 100
+        if price <= 0 or price >= 1:
+            log.error(f"Price invalid after tick rounding: {price}")
+            return None
+
+        shares = math.ceil(size_usd / price * 100) / 100  # yukarı yuvarla
+        # Polymarket minimum 5 share zorunlulugu
+        if shares < 5:
+            shares = 5.0
+            size_usd = round(shares * price, 2)
+            log.info(f"Adjusted to min 5 shares: size_usd=${size_usd:.2f}")
         question = market.get("question", "")[:120]
 
-        if self.cfg.PAPER_TRADING:
+        # Test stratejileri ASLA live order vermez
+        _is_test = strategy_name in ("btc_5min_test", "btc_15min_test")
+        _force_paper = self.cfg.PAPER_TRADING or _is_test
+
+        if _force_paper:
             # Paper mode: just log to DB
             tid = self.db.log_trade(
                 strategy=strategy_name,
@@ -107,6 +124,7 @@ class Executor:
                 predicted_edge=edge,
                 decision_reason=f"direction={direction} edge={edge:.4f}",
                 entry_latency_ms=latency_ms,
+                condition_id=market.get("condition_id", ""),
             )
             # Log execution audit with fill quality
             self.db.log_execution_audit(
@@ -139,6 +157,7 @@ class Executor:
                 question=question,
                 direction=direction,
                 notes=notes,
+                strategy_name=strategy_name,
             )
 
     async def _execute_live(
@@ -153,6 +172,7 @@ class Executor:
         question: str,
         direction: str,
         notes: str,
+        strategy_name: str = "btc_5min_fast",
     ) -> Optional[int]:
         """Execute a live order via py-clob-client."""
         client = self._get_clob_client()
@@ -177,7 +197,7 @@ class Executor:
             order_id = result.get("orderID", "") if result else ""
 
             tid = self.db.log_trade(
-                strategy="btc_5min_fast",
+                strategy=strategy_name,
                 market_id=market.get("id", ""),
                 question=question,
                 side=side,
@@ -188,6 +208,7 @@ class Executor:
                 predicted_edge=edge,
                 decision_reason=f"LIVE direction={direction} edge={edge:.4f}",
                 execution_id=order_id,
+                condition_id=market.get("condition_id", ""),
             )
 
             if success:
@@ -203,3 +224,109 @@ class Executor:
         except Exception as e:
             log.error(f"Live execution error: {e}", exc_info=True)
             return None
+
+    async def sell_position(
+        self,
+        token_id: str,
+        shares: float,
+        price: float,
+        trade_id: Optional[int] = None,
+        strategy_name: str = "btc_5min_fast",
+    ) -> bool:
+        """
+        Profit taking: pozisyonu SELL order ile sat.
+        
+        Args:
+            token_id: Polymarket token ID
+            shares: number of shares to sell
+            price: sell price (best bid)
+            trade_id: optional trade ID for logging
+            strategy_name: strategy name for logging
+            
+        Returns:
+            True if sell successful (or paper mode simulated), False otherwise
+        """
+        if self.cfg.PAPER_TRADING:
+            # Paper mode: simulate sell, log to DB
+            log.info(
+                f"PAPER SELL: {token_id[:10]}... {shares:.2f} shares @ {price:.4f} "
+                f"(trade_id={trade_id})"
+            )
+            # Update trade status in DB if trade_id provided
+            if trade_id:
+                self.db.update_trade_status(trade_id, "sold", sold_price=price)
+            return True
+        else:
+            # Live mode: execute SELL order with fill verification
+            client = self._get_clob_client()
+            if not client:
+                log.error("Live trading requested but CLOB client not available")
+                return False
+
+            try:
+                from py_clob_client.order_builder.constants import SELL
+                from py_clob_client.clob_types import OrderArgs
+
+                order_args = OrderArgs(
+                    token_id=token_id,
+                    price=price,
+                    size=shares,
+                    side=SELL,
+                )
+                order = client.create_order(order_args)
+                result = client.post_order(order)
+
+                success = bool(result and result.get("success"))
+                order_id = result.get("orderID", "") if result else ""
+
+                if not success:
+                    log.warning(f"LIVE SELL post failed: {result}")
+                    return False
+
+                log.info(
+                    f"LIVE SELL posted: {token_id[:10]}... {shares:.2f} shares @ {price:.4f} "
+                    f"order={order_id} (trade_id={trade_id})"
+                )
+
+                # Fill verification: poll for 15s (5 attempts, 3s apart)
+                import asyncio
+                filled = False
+                for attempt in range(5):
+                    await asyncio.sleep(3)
+                    try:
+                        order_state = client.get_order(order_id)
+                        if not isinstance(order_state, dict):
+                            continue
+                        status = str(order_state.get("status") or order_state.get("state") or "").lower()
+                        filled_size = float(order_state.get("filled_size") or order_state.get("sizeMatched") or 0.0)
+
+                        if status in ("cancelled", "canceled", "expired"):
+                            log.warning(f"LIVE SELL order {status}: {order_id}")
+                            return False
+
+                        fill_ratio = filled_size / shares if shares > 0 else 0
+                        if fill_ratio >= 0.95:
+                            log.info(f"LIVE SELL filled: {filled_size:.2f}/{shares:.2f} shares order={order_id}")
+                            filled = True
+                            break
+
+                        log.info(f"LIVE SELL polling ({attempt+1}/5): filled={filled_size:.2f}/{shares:.2f} status={status}")
+                    except Exception as poll_err:
+                        log.warning(f"LIVE SELL poll error: {poll_err}")
+
+                if filled:
+                    if trade_id:
+                        self.db.update_trade_status(trade_id, "sold", sold_price=price)
+                    return True
+                else:
+                    # Timeout: cancel order, leave for resolution
+                    log.warning(f"LIVE SELL timeout, cancelling order {order_id}")
+                    try:
+                        client.cancel(order_id)
+                    except Exception:
+                        pass
+                    return False
+
+            except Exception as e:
+                log.error(f"Live sell error: {e}", exc_info=True)
+                return False

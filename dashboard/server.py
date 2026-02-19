@@ -29,6 +29,7 @@ PROJECT_DIR = BASE_DIR.parent
 load_dotenv(PROJECT_DIR / ".env")
 
 DB_PATH = str(PROJECT_DIR / "trades.db")
+MAIN_STRATEGIES = ("btc_5min_fast", "btc_15min", "manual_5m", "manual_15m")
 STATUS_FILE = os.getenv("STATUS_FILE", "/tmp/polymarket_bot_status.json")
 DECISIONS_FILE = os.getenv("DECISIONS_FILE", "/tmp/polymarket_bot_decisions.json")
 STARTING_BALANCE = float(os.getenv("STARTING_BALANCE", "1000"))
@@ -495,7 +496,7 @@ class Dashboard:
     async def _trade_loop(self):
         while self._running:
             try:
-                trades = self._get_trades(limit=10)
+                trades = self._get_trades(limit=10, strategies=MAIN_STRATEGIES)
                 for t in reversed(trades):
                     tid = t.get("id", 0)
                     pnl = t.get("pnl", 0) or 0
@@ -540,8 +541,10 @@ class Dashboard:
     # ── REST API ───────────────────────────────────────────────
 
     async def api_trades(self, req):
-        limit = int(req.query.get("limit", 100))
-        return web.json_response(self._get_trades(limit=limit))
+        limit = int(req.query.get("limit", 1000))
+        strat_param = req.query.get("strategies", "main")
+        strategies = MAIN_STRATEGIES if strat_param == "main" else None
+        return web.json_response(self._get_trades(limit=limit, strategies=strategies))
 
     async def api_stats(self, req):
         return web.json_response(self._get_stats())
@@ -680,13 +683,20 @@ class Dashboard:
 
     # ── DB helpers ─────────────────────────────────────────────
 
-    def _get_trades(self, limit=100):
+    def _get_trades(self, limit=1000, strategies=None):
         try:
             conn = sqlite3.connect(DB_PATH)
             conn.row_factory = sqlite3.Row
-            cur = conn.execute(
-                "SELECT * FROM trades ORDER BY id DESC LIMIT ?", (limit,)
-            )
+            if strategies:
+                placeholders = ",".join("?" for _ in strategies)
+                cur = conn.execute(
+                    f"SELECT * FROM trades WHERE strategy IN ({placeholders}) ORDER BY id DESC LIMIT ?",
+                    (*strategies, limit),
+                )
+            else:
+                cur = conn.execute(
+                    "SELECT * FROM trades ORDER BY id DESC LIMIT ?", (limit,)
+                )
             rows = [dict(r) for r in cur.fetchall()]
             conn.close()
             return rows
@@ -711,7 +721,7 @@ class Dashboard:
                     COALESCE(SUM(CASE WHEN pnl < 0 THEN pnl ELSE 0 END), 0) as total_loss,
                     COALESCE(SUM(pnl), 0) as net_pnl,
                     COALESCE(SUM(cost), 0) as total_cost
-                FROM trades WHERE strategy IN ('btc_5min_fast', 'btc_15min')
+                FROM trades WHERE strategy IN ('btc_5min_fast', 'btc_15min', 'manual_5m', 'manual_15m')
             """
                 ).fetchone()
             )
@@ -725,7 +735,7 @@ class Dashboard:
                     SUM(CASE WHEN pnl > 0 THEN 1 ELSE 0 END) as today_wins,
                     SUM(CASE WHEN pnl < 0 THEN 1 ELSE 0 END) as today_losses
                 FROM trades
-                WHERE strategy IN ('btc_5min_fast', 'btc_15min') AND date(ts) = date('now')
+                WHERE strategy IN ('btc_5min_fast', 'btc_15min', 'manual_5m', 'manual_15m') AND date(ts) = date('now')
             """
                 ).fetchone()
             )
@@ -1077,7 +1087,7 @@ class Dashboard:
             conn.row_factory = sqlite3.Row
             rows = conn.execute(
                 """SELECT id, ts, side, price, cost, pnl, notes, decision_reason, status, strategy
-                   FROM trades WHERE strategy IN ('btc_5min_fast', 'btc_15min') ORDER BY id ASC"""
+                   FROM trades WHERE strategy IN ('btc_5min_fast', 'btc_15min', 'manual_5m', 'manual_15m') ORDER BY id ASC"""
             ).fetchall()
             conn.close()
         except Exception as e:
@@ -1591,6 +1601,9 @@ class Dashboard:
                 continue
             if key == "mode":
                 mode = str(value).strip().lower()
+                if getattr(bot_config, "ARB_FORCE_PAPER", True):
+                    cfg["mode"] = "paper"
+                    continue
                 cfg["mode"] = "live" if mode == "live" else "paper"
                 continue
             if key == "lock_main_strategy":

@@ -9,6 +9,9 @@ log = logging.getLogger(__name__)
 
 class RiskManager:
 
+    # Test stratejileri — risk hesaplamasina dahil edilmez
+    _TEST_STRATEGIES = {"btc_5min_test", "btc_15min_test"}
+
     def __init__(self, config, db):
         self.cfg = config
         self.db = db
@@ -29,63 +32,90 @@ class RiskManager:
         if self._halted:
             return False, f"HALTED: {self._halt_reason}"
 
-        # Daily loss limit
-        daily_pnl = self.db.daily_pnl()
+        # Daily loss limit — test stratejileri haric
+        daily_pnl = self._daily_pnl_excl_test()
         if daily_pnl < -self.cfg.MAX_DAILY_LOSS_USD:
             reason = f"Daily loss ${daily_pnl:.2f} > limit -${self.cfg.MAX_DAILY_LOSS_USD:.2f}"
             self.halt(reason)
             return False, reason
 
-        # Consecutive losses — warn but auto-resume (paper mode icin halt yok)
-        losses = self.db.consecutive_losses_by_strategy("btc_5min_fast")
+        # Consecutive losses (5m + 15m birlikte)
+        losses = self.db.consecutive_losses_by_strategy(("btc_5min_fast", "btc_15min"))
         if losses >= self.cfg.MAX_CONSECUTIVE_LOSSES:
+            if getattr(self.cfg, "HALT_ON_CONSECUTIVE_LOSSES", True):
+                reason = (
+                    f"Consecutive losses {losses} >= limit {self.cfg.MAX_CONSECUTIVE_LOSSES}"
+                )
+                self.halt(reason)
+                return False, reason
+
             if not self._consec_warned or losses > self._consec_warned:
                 log.warning(
                     f"⚠ CONSECUTIVE LOSS WARNING: {losses} ardisik kayip! "
                     f"(limit={self.cfg.MAX_CONSECUTIVE_LOSSES}) — devam ediliyor"
                 )
                 self._consec_warned = losses
+        elif losses == 0:
+            self._consec_warned = 0
 
-        # PDF s.90: max simultaneous positions
+        # PDF s.90: max simultaneous positions — test stratejileri haric
         max_pos = getattr(self.cfg, "MAX_SIMULTANEOUS_POSITIONS", 3)
-        active = self.db.active_positions()
+        active = [
+            p for p in self.db.active_positions()
+            if p.get("strategy") not in self._TEST_STRATEGIES
+        ]
         if len(active) >= max_pos:
             return False, f"Max {max_pos} simultaneous positions ({len(active)} active)"
 
         return True, "OK"
 
+    def _daily_pnl_excl_test(self) -> float:
+        """Test stratejileri haric gunluk PnL."""
+        from datetime import datetime, timezone
+        today = datetime.now(timezone.utc).strftime("%Y-%m-%d")
+        try:
+            r = self.db.conn.execute(
+                """SELECT COALESCE(SUM(pnl),0) FROM trades
+                   WHERE DATE(ts)=? AND status='resolved'
+                     AND (strategy IS NULL OR strategy NOT IN ('btc_5min_test','btc_15min_test'))""",
+                (today,),
+            ).fetchone()
+            return r[0] if r else 0.0
+        except Exception:
+            return self.db.daily_pnl()
+
     def position_size(self, edge: float, price: float, orderbook_depth_usd: float = 0.0) -> float:
-        """PDF s.36,68: Modified Kelly position sizing for binary market.
-        f = (b*p - q) / b * sqrt(p) — quarter-Kelly.
-        Capped at 50% of orderbook depth if available."""
+        """Kelly-gated dynamic sizing. Kelly = go/no-go + scale factor."""
         if edge <= 0 or price <= 0 or price >= 1:
             return 0.0
 
-        # Binary payout odds
         b = (1.0 - price) / price
         if b <= 0:
             return 0.0
 
-        # Estimate win prob from edge + market price
-        win_prob = price + edge
-        win_prob = max(0.01, min(0.99, win_prob))
+        win_prob = max(0.01, min(0.99, price + edge))
         q = 1 - win_prob
 
-        # PDF modified Kelly: f = (b*p - q) / b * sqrt(p)
         import math
         full_kelly = (b * win_prob - q) / b * math.sqrt(win_prob)
         if full_kelly <= 0:
             return 0.0
 
-        size = self.cfg.BANKROLL * full_kelly * self.cfg.KELLY_FRACTION
-        # Cap at configured trade size
-        size = min(size, self.cfg.TRADE_SIZE_USD)
+        # Kelly'yi scale factor olarak kullan (0.05 = tam boy)
+        kelly_scale = min(1.0, full_kelly / 0.05)
+        size = self.cfg.TRADE_SIZE_USD * kelly_scale
 
-        # PDF: Cap at 50% of orderbook depth
+        # Min $3 (Polymarket 5 share * ~$0.50 = $2.50 alt sinir)
+        if size < 3.0:
+            return 0.0
+
+        size = min(size, self.cfg.TRADE_SIZE_USD)
+        size = min(size, self.cfg.BANKROLL * 0.25)  # Bakiyenin max %25'i
+
         if orderbook_depth_usd > 0:
             size = min(size, orderbook_depth_usd * 0.5)
 
-        return round(size, 2) if size >= 1.0 else 0.0
+        return round(size, 2)
 
     def halt(self, reason: str):
         self._halted = True
@@ -100,14 +130,20 @@ class RiskManager:
         log.info("Trading resumed")
 
     def status(self) -> dict:
+        active = [
+            p for p in self.db.active_positions()
+            if p.get("strategy") not in self._TEST_STRATEGIES
+        ]
         return {
             "halted": self._halted,
             "reason": self._halt_reason,
             "halt_time": self._halt_time,
-            "daily_pnl": self.db.daily_pnl(),
-            "consecutive_losses": self.db.consecutive_losses(),
+            "daily_pnl": self._daily_pnl_excl_test(),
+            "consecutive_losses": self.db.consecutive_losses_by_strategy(
+                ("btc_5min_fast", "btc_15min")
+            ),
             "max_daily_loss": self.cfg.MAX_DAILY_LOSS_USD,
             "max_consecutive_losses": self.cfg.MAX_CONSECUTIVE_LOSSES,
-            "active_positions": len(self.db.active_positions()),
+            "active_positions": len(active),
             "max_simultaneous": getattr(self.cfg, "MAX_SIMULTANEOUS_POSITIONS", 3),
         }

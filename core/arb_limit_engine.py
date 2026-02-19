@@ -35,6 +35,8 @@ class CycleRuntime:
     shares_target: float
     up_token_id: str
     down_token_id: str
+    up_entry_price: float = 0.0
+    down_entry_price: float = 0.0
     up_order_id: str = ""
     down_order_id: str = ""
     status: str = "waiting_fill"
@@ -55,6 +57,10 @@ class ArbLimitEngine:
         self.cfg = config
         self.db = db
         self.mode = "live" if str(mode).lower() == "live" else "paper"
+
+        # Hard lock: arb ASLA canli olmaz
+        if getattr(config, "ARB_FORCE_PAPER", True):
+            self.mode = "paper"
 
         self._session: Optional[aiohttp.ClientSession] = None
         self._running = False
@@ -125,6 +131,11 @@ class ArbLimitEngine:
             "dynamic_price_min": float(getattr(self.cfg, "ARB_DYNAMIC_PRICE_MIN", 0.44)),
             "dynamic_price_max": float(getattr(self.cfg, "ARB_DYNAMIC_PRICE_MAX", 0.46)),
             "lock_main_strategy": bool(getattr(self.cfg, "ARB_LOCK_MAIN_STRATEGY", True)),
+            "dynamic_entry_enabled": bool(getattr(self.cfg, "ARB_DYNAMIC_ENTRY_ENABLED", True)),
+            "min_edge_per_share": float(getattr(self.cfg, "ARB_MIN_EDGE_PER_SHARE", 0.02)),
+            "max_combined_cost": float(getattr(self.cfg, "ARB_MAX_COMBINED_COST", 0.98)),
+            "max_single_side_price": float(getattr(self.cfg, "ARB_MAX_SINGLE_SIDE_PRICE", 0.55)),
+            "price_buffer": float(getattr(self.cfg, "ARB_PRICE_BUFFER", 0.005)),
         }
 
     def apply_runtime_config(self, overrides: Dict[str, Any]):
@@ -134,9 +145,16 @@ class ArbLimitEngine:
         for key, value in overrides.items():
             if key not in merged:
                 continue
+            if key == "mode" and str(value).lower() == "live":
+                log.warning("ARB LIVE MODE BLOCKED: hard lock active")
+                continue
             merged[key] = value
         self._runtime = merged
         self.mode = "live" if str(self._runtime.get("mode", self.mode)).lower() == "live" else "paper"
+
+        # Hard lock: arb ASLA canli olmaz
+        if getattr(self.cfg, "ARB_FORCE_PAPER", True):
+            self.mode = "paper"
 
     def runtime_config(self) -> Dict[str, Any]:
         return dict(self._runtime)
@@ -409,7 +427,6 @@ class ArbLimitEngine:
             return
         pipeline.append(("spread", True, f"{max_spread*100:.1f}% <= {max_spread_limit*100:.1f}%"))
 
-        entry_limit = float(self._runtime["entry_price_limit"])
         min_liq = float(self._runtime["min_liquidity_usd"])
 
         total_depth_up = self._total_ask_depth(up_book)
@@ -429,15 +446,64 @@ class ArbLimitEngine:
             return
         pipeline.append(("liquidity", True, f"${min_depth:.0f} >= ${min_liq:.0f}"))
 
-        pipeline.append(("entry_price", True, f"limit={entry_limit:.4f}"))
+        # --- Dynamic per-side pricing ---
+        up_best_ask = self._best_ask(up_book)
+        down_best_ask = self._best_ask(down_book)
 
-        competition_score = (self._competition_score(up_book, entry_limit) + self._competition_score(down_book, entry_limit)) / 2.0
+        if not up_best_ask or not down_best_ask:
+            pipeline.append(("combined_cost", False, "no ask price available"))
+            self._last_pipeline = pipeline
+            return
+
+        dynamic_entry = bool(self._runtime.get("dynamic_entry_enabled", True))
+        entry_limit = float(self._runtime["entry_price_limit"])
+
+        if dynamic_entry:
+            combined_cost = up_best_ask + down_best_ask
+            edge = 1.0 - combined_cost
+            max_combined = float(self._runtime["max_combined_cost"])
+            min_edge = float(self._runtime["min_edge_per_share"])
+            max_single = float(self._runtime["max_single_side_price"])
+            price_buffer = float(self._runtime["price_buffer"])
+
+            if combined_cost >= max_combined:
+                pipeline.append(("combined_cost", False, f"up={up_best_ask:.3f}+down={down_best_ask:.3f}={combined_cost:.3f} >= max {max_combined:.2f}"))
+                self._last_pipeline = pipeline
+                return
+            pipeline.append(("combined_cost", True, f"up={up_best_ask:.3f}+down={down_best_ask:.3f}={combined_cost:.3f} < max {max_combined:.2f}"))
+
+            if edge < min_edge:
+                pipeline.append(("edge", False, f"edge={edge:.4f} (${edge:.4f}/share) < min {min_edge:.2f}"))
+                self._last_pipeline = pipeline
+                return
+            pipeline.append(("edge", True, f"edge={edge:.4f} (${edge:.4f}/share) >= min {min_edge:.2f}"))
+
+            if up_best_ask > max_single:
+                pipeline.append(("per_side_prices", False, f"up_ask={up_best_ask:.3f} > max {max_single:.2f}"))
+                self._last_pipeline = pipeline
+                return
+            if down_best_ask > max_single:
+                pipeline.append(("per_side_prices", False, f"down_ask={down_best_ask:.3f} > max {max_single:.2f}"))
+                self._last_pipeline = pipeline
+                return
+
+            up_limit = up_best_ask + price_buffer
+            down_limit = down_best_ask + price_buffer
+            pipeline.append(("per_side_prices", True, f"up_limit={up_limit:.4f} down_limit={down_limit:.4f}"))
+        else:
+            # Legacy single-price mode
+            up_limit = entry_limit
+            down_limit = entry_limit
+            pipeline.append(("entry_price", True, f"limit={entry_limit:.4f} (legacy)"))
+
+        competition_score = (self._competition_score(up_book, up_limit) + self._competition_score(down_book, down_limit)) / 2.0
         suggested_price = self._suggested_price(competition_score)
         pipeline.append(("competition", True, f"score={competition_score:.2f} suggested={suggested_price:.4f}"))
         self._last_pipeline = pipeline
 
         per_leg_budget = float(self._runtime["cycle_budget_usd"]) / 2.0
-        shares_target = max(5.0 if self.mode == "live" else 1.0, round(per_leg_budget / max(entry_limit, 0.01), 2))
+        max_side_price = max(up_limit, down_limit)
+        shares_target = max(5.0 if self.mode == "live" else 1.0, round(per_leg_budget / max(max_side_price, 0.01), 2))
 
         cycle_id = self.db.create_arb_cycle(
             symbol=market["symbol"],
@@ -454,6 +520,8 @@ class ArbLimitEngine:
             down_token_id=market["down_token_id"],
             competition_score=competition_score,
             dynamic_price_suggested=suggested_price,
+            up_entry_price=up_limit,
+            down_entry_price=down_limit,
         )
 
         cycle = CycleRuntime(
@@ -471,6 +539,8 @@ class ArbLimitEngine:
             shares_target=float(shares_target),
             up_token_id=market["up_token_id"],
             down_token_id=market["down_token_id"],
+            up_entry_price=up_limit,
+            down_entry_price=down_limit,
         )
 
         ok = await self._place_entry_orders(cycle)
@@ -489,9 +559,9 @@ class ArbLimitEngine:
         self._market_cycle_opened.add(market_id)
         self._consecutive_bails = 0
         log.info(
-            "Arb cycle #%s OPENED: %s %s limit=%.4f shares=%.2f budget=$%.2f",
+            "Arb cycle #%s OPENED: %s %s up_limit=%.4f down_limit=%.4f shares=%.2f budget=$%.2f",
             cycle.cycle_id, market["symbol"], market["question"][:60],
-            entry_limit, shares_target, float(self._runtime["cycle_budget_usd"]),
+            up_limit, down_limit, shares_target, float(self._runtime["cycle_budget_usd"]),
         )
 
     def _log_reject_once(
@@ -524,7 +594,8 @@ class ArbLimitEngine:
         )
 
     async def _place_entry_orders(self, cycle: CycleRuntime) -> bool:
-        price = self._tick_price(cycle.entry_price_limit)
+        up_price = self._tick_price(cycle.up_entry_price) if cycle.up_entry_price > 0 else self._tick_price(cycle.entry_price_limit)
+        down_price = self._tick_price(cycle.down_entry_price) if cycle.down_entry_price > 0 else self._tick_price(cycle.entry_price_limit)
         size = cycle.shares_target
 
         if self.mode == "paper":
@@ -538,7 +609,7 @@ class ArbLimitEngine:
                 side="UP",
                 action="place",
                 order_id=cycle.up_order_id,
-                price=price,
+                price=up_price,
                 size=size,
                 state=cycle.status,
                 message="paper_limit",
@@ -550,15 +621,15 @@ class ArbLimitEngine:
                 side="DOWN",
                 action="place",
                 order_id=cycle.down_order_id,
-                price=price,
+                price=down_price,
                 size=size,
                 state=cycle.status,
                 message="paper_limit",
             )
             return True
 
-        up_order_id = self._place_live_order(cycle.up_token_id, price, size)
-        down_order_id = self._place_live_order(cycle.down_token_id, price, size)
+        up_order_id = self._place_live_order(cycle.up_token_id, up_price, size)
+        down_order_id = self._place_live_order(cycle.down_token_id, down_price, size)
         cycle.up_order_id = up_order_id or ""
         cycle.down_order_id = down_order_id or ""
         self.db.update_arb_cycle(cycle.cycle_id, up_order_id=cycle.up_order_id, down_order_id=cycle.down_order_id)
@@ -570,7 +641,7 @@ class ArbLimitEngine:
             side="UP",
             action="place",
             order_id=cycle.up_order_id,
-            price=price,
+            price=up_price,
             size=size,
             state=cycle.status,
             message="live_limit",
@@ -582,7 +653,7 @@ class ArbLimitEngine:
             side="DOWN",
             action="place",
             order_id=cycle.down_order_id,
-            price=price,
+            price=down_price,
             size=size,
             state=cycle.status,
             message="live_limit",
@@ -703,7 +774,10 @@ class ArbLimitEngine:
         up_best_ask = self._best_ask(up_book)
         down_best_ask = self._best_ask(down_book)
 
-        if cycle.up_fill_shares < cycle.shares_target and up_best_ask and up_best_ask <= cycle.entry_price_limit:
+        up_fill_limit = cycle.up_entry_price if cycle.up_entry_price > 0 else cycle.entry_price_limit
+        down_fill_limit = cycle.down_entry_price if cycle.down_entry_price > 0 else cycle.entry_price_limit
+
+        if cycle.up_fill_shares < cycle.shares_target and up_best_ask and up_best_ask <= up_fill_limit:
             fill_qty = cycle.shares_target - cycle.up_fill_shares
             cycle.up_fill_shares = cycle.shares_target
             cycle.up_avg_fill_price = up_best_ask
@@ -727,7 +801,7 @@ class ArbLimitEngine:
                 message="paper_fill",
             )
 
-        if cycle.down_fill_shares < cycle.shares_target and down_best_ask and down_best_ask <= cycle.entry_price_limit:
+        if cycle.down_fill_shares < cycle.shares_target and down_best_ask and down_best_ask <= down_fill_limit:
             fill_qty = cycle.shares_target - cycle.down_fill_shares
             cycle.down_fill_shares = cycle.shares_target
             cycle.down_avg_fill_price = down_best_ask
@@ -1323,6 +1397,8 @@ class ArbLimitEngine:
                     shares_target=float(row.get("shares_target", 0.0) or 0.0),
                     up_token_id=str(row.get("up_token_id", "")),
                     down_token_id=str(row.get("down_token_id", "")),
+                    up_entry_price=float(row.get("up_entry_price", 0.0) or 0.0),
+                    down_entry_price=float(row.get("down_entry_price", 0.0) or 0.0),
                     up_order_id=str(row.get("up_order_id", "")),
                     down_order_id=str(row.get("down_order_id", "")),
                     status=str(row.get("status", "waiting_fill")),

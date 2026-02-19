@@ -5,7 +5,7 @@
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>Polymarket BTC Trading Dashboard</title>
 <!-- Combined CSS (modular sources in static/css/) -->
-<link rel="stylesheet" href="/static/css/all.css?v=8">
+<link rel="stylesheet" href="/static/css/all.css?v=10">
 </head>
 <body>
 
@@ -302,14 +302,65 @@
     <span class="title">Islem Gecmisi</span>
     <span class="count" id="trade-count">0 islem</span>
   </div>
-  <div class="trades-scroll">
-    <table class="trades-table">
-      <thead><tr>
-        <th>#</th><th>Tarih/Saat</th><th>TR Saati</th><th>Mod</th><th>Market</th><th>Yon</th><th>Maliyet</th>
-        <th>Fiyat</th><th>Miktar</th><th>Durum</th><th>Kar/Zarar</th>
-      </tr></thead>
-      <tbody id="trades-body"></tbody>
-    </table>
+  <div class="trades-content">
+    <div class="trades-scroll">
+      <table class="trades-table">
+        <thead><tr>
+          <th>#</th><th>Tarih/Saat</th><th>TR Saati</th><th>Mod</th><th>Market</th><th>Yon</th><th>Maliyet</th>
+          <th>Fiyat</th><th>Miktar</th><th>Durum</th><th>Kar/Zarar</th>
+        </tr></thead>
+        <tbody id="trades-body"></tbody>
+      </table>
+    </div>
+    <div class="trades-filter-panel">
+      <div class="filter-section">
+        <div class="filter-title">Filtreler</div>
+        <div class="filter-group">
+          <label>Tarih</label>
+          <select id="filter-date">
+            <option value="all" selected>Tumu</option>
+            <option value="today">Bugun</option>
+            <option value="yesterday">Dun</option>
+            <option value="week">Son 7 Gun</option>
+          </select>
+        </div>
+        <div class="filter-group">
+          <label>Mod</label>
+          <select id="filter-mode">
+            <option value="all">Tumu</option>
+            <option value="paper">Paper</option>
+            <option value="live">Live</option>
+          </select>
+        </div>
+        <div class="filter-group">
+          <label>Market</label>
+          <select id="filter-market">
+            <option value="all">Tumu</option>
+            <option value="5m">5dk</option>
+            <option value="15m">15dk</option>
+          </select>
+        </div>
+        <div class="filter-group">
+          <label>Yon</label>
+          <select id="filter-side">
+            <option value="all">Tumu</option>
+            <option value="up">UP</option>
+            <option value="down">DOWN</option>
+          </select>
+        </div>
+        <div class="filter-group">
+          <label>Durum</label>
+          <select id="filter-status">
+            <option value="all">Tumu</option>
+            <option value="win">Kazandi</option>
+            <option value="loss">Kaybetti</option>
+            <option value="pending">Beklemede</option>
+          </select>
+        </div>
+        <button id="filter-clear" class="filter-clear-btn">Temizle</button>
+      </div>
+      <div class="filter-summary" id="filter-summary"></div>
+    </div>
   </div>
 </div>
 
@@ -810,6 +861,6 @@
 <script src="https://unpkg.com/lightweight-charts@4.1.1/dist/lightweight-charts.standalone.production.js"></script>
 
 <!-- Combined JS (modular sources in static/js/) -->
-<script src="/static/js/all.js?v=8"></script>
+<script src="/static/js/all.js?v=10"></script>
 </body>
 </html>

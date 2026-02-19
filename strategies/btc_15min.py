@@ -22,6 +22,7 @@ class BTC15MinStrategy(BTC5MinFastStrategy):
     async def scan(self):
         """One iteration of the fast loop — 15-min market variant."""
         self._scan_count += 1
+        self._dt.begin(self._scan_count)
 
         # 0. Live trade limit check
         max_live = getattr(self.cfg, "MAX_LIVE_TEST_TRADES", 0)
@@ -29,18 +30,19 @@ class BTC15MinStrategy(BTC5MinFastStrategy):
             if self._live_trade_count >= max_live:
                 if self._scan_count % 30 == 1:
                     log.info(f"[15m] Live test limit reached ({self._live_trade_count}/{max_live})")
+                self._dt.step("risk_check", False, f"live limit {self._live_trade_count}/{max_live}")
                 return
 
         # 1. Risk check
         ok, reason = self.risk.can_trade()
-        if not ok:
+        if not self._dt.step("risk_check", ok, reason if not ok else "OK"):
             if self._scan_count % 30 == 1:
                 log.warning(f"[15m] Risk blocked: {reason}")
             return
 
         # 2. Find active BTC 15-min market
         market = await self.poly.find_active_btc_15min_market()
-        if not market:
+        if not self._dt.step("market_discovery", bool(market), "Bulunamadi" if not market else "OK"):
             if self._scan_count % 15 == 1:
                 log.info("[15m] No active BTC 15-min market found")
             return
@@ -49,6 +51,7 @@ class BTC15MinStrategy(BTC5MinFastStrategy):
         end_ts = market.get("end_date_ts", 0)
         now = time.time()
         remaining = end_ts - now
+        self._dt.set_market_info(market.get("question", "")[:60], remaining)
 
         # 3. New market window? Set reference price + reset observation
         if market_id != self._current_market_id:
@@ -75,18 +78,23 @@ class BTC15MinStrategy(BTC5MinFastStrategy):
         if time.time() - self._last_trade_ts < 60:
             if self._scan_count % 30 == 1:
                 log.info(f"[15m] SKIP: cooldown active ({60 - (time.time() - self._last_trade_ts):.0f}s left)")
+            self._dt.step("preparation", False, "cooldown")
             return
 
         # 3c. Ayni market_id'ye tekrar girme
         if market_id in self._traded_market_ids:
             if self._scan_count % 30 == 1:
                 log.info(f"[15m] SKIP: already traded this market {market_id[:12]}")
+            self._dt.step("preparation", False, "duplicate market")
             return
 
         # 4. Already have a position in this market?
         if self._has_position or market_id == self._last_trade_market_id:
             await self._track_live_prices(market)
+            self._dt.step("preparation", False, "has position")
             return
+
+        self._dt.step("preparation", True, "OK")
 
         # 5. OBSERVATION PHASE (remaining > MAX_SECONDS_REMAINING_15M)
         max_remaining = getattr(self.cfg, "MAX_SECONDS_REMAINING_15M", 540)
@@ -97,6 +105,7 @@ class BTC15MinStrategy(BTC5MinFastStrategy):
                     f"[15m] Observation: collecting... samples={len(self._obs_prices)} "
                     f"remaining={remaining:.0f}s"
                 )
+            self._dt.step("observation", False, f"collecting samples={len(self._obs_prices)} rem={remaining:.0f}s")
             return
 
         # 6. Observation complete?
@@ -129,9 +138,10 @@ class BTC15MinStrategy(BTC5MinFastStrategy):
                 except Exception as e:
                     log.warning(f"[15m] AI prediction failed: {e}")
 
-        # 7. Entry window check
-        min_remaining = getattr(self.cfg, "MIN_SECONDS_REMAINING_15M", 60)
-        if remaining < min_remaining:
+        self._dt.step("observation", True, f"complete samples={self._obs_result['sample_count'] if self._obs_result else 0}")
+
+        # 7. Hard floor: son 30s'de asla girme (15m marketler)
+        if remaining < 30:
             return
 
         # 8. Get BTC price data
@@ -144,23 +154,75 @@ class BTC15MinStrategy(BTC5MinFastStrategy):
 
         # 9. NOISE FILTER: 15m uses MIN_DELTA_FOR_ENTRY_15M
         min_delta = getattr(self.cfg, "MIN_DELTA_FOR_ENTRY_15M", 0.0005)
-        if abs(delta) < min_delta:
+        if not self._dt.step("delta_filter", abs(delta) >= min_delta, f"|{delta:.6f}| vs min={min_delta}"):
             return
 
         # 9b. MOMENTUM CAP: cok yuksek momentum = trend uzamis, mean reversion riski
         max_mom = getattr(self.cfg, "MAX_MOMENTUM_FOR_ENTRY_15M", 0.0006)
-        if momentum is not None and abs(momentum) > max_mom:
-            if self._scan_count % 30 == 1:
-                log.info(f"[15m] SKIP: momentum too high |{momentum:.6f}| > {max_mom}")
+        mom_ok = momentum is None or abs(momentum) <= max_mom
+        if not self._dt.step("momentum_cap", mom_ok, f"|{momentum:.6f}| vs max={max_mom}" if momentum is not None else "N/A"):
+            log.info(f"[15m] SKIP: momentum too high |{momentum:.6f}| > {max_mom}")
             return
 
-        # 10. Determine direction
-        if delta > 0 and (momentum is None or momentum >= 0):
+        # 9c. CANDLE SIGNAL: 1-saniye mum analizi
+        candle_result = await self._get_candle_signal()
+        if candle_result:
+            self._dt.step(
+                "candle_signal", True,
+                f"{candle_result['direction'].upper()} score={candle_result['score']:.4f} pattern={candle_result['pattern']}"
+            )
+        else:
+            self._dt.step("candle_signal", True, "N/A (veri yok)")
+
+        # 10. Determine direction — SKOR TABANLI yon belirleme
+        dir_score = 0.0
+        dir_details = []
+
+        # Delta sinyali (agirlik: 1.0)
+        if delta > 0:
+            dir_score += 1.0
+            dir_details.append(f"delta=+1.0")
+        elif delta < 0:
+            dir_score -= 1.0
+            dir_details.append(f"delta=-1.0")
+
+        # Momentum sinyali (agirlik: 0.5)
+        if momentum is not None:
+            if momentum > 0:
+                dir_score += 0.5
+                dir_details.append(f"mom=+0.5")
+            elif momentum < 0:
+                dir_score -= 0.5
+                dir_details.append(f"mom=-0.5")
+
+        # Gozlem fazi sinyali (agirlik: consistency degeri)
+        if self._obs_result:
+            obs_weight = self._obs_result["consistency"]
+            if self._obs_result["direction"] == "up":
+                dir_score += obs_weight
+            else:
+                dir_score -= obs_weight
+            dir_details.append(f"obs={'+' if self._obs_result['direction'] == 'up' else '-'}{obs_weight:.2f}")
+
+        # Mum analizi sinyali (agirlik: CANDLE_SIGNAL_WEIGHT)
+        candle_weight = getattr(self.cfg, "CANDLE_SIGNAL_WEIGHT", 0.6)
+        if candle_result:
+            dir_score += candle_result["score"] * candle_weight
+            dir_details.append(f"candle={candle_result['score'] * candle_weight:+.2f}")
+
+        # Yon: esik (en az 2 kaynak uyumlu olmali)
+        min_dir_score = getattr(self.cfg, "MIN_DIRECTION_SCORE_15M", 0.5)
+        if dir_score > min_dir_score:
             direction = "up"
-        elif delta < 0 and (momentum is None or momentum <= 0):
+        elif dir_score < -min_dir_score:
             direction = "down"
         else:
+            detail = f"score={dir_score:+.2f} thr={min_dir_score} [{' '.join(dir_details)}]"
+            self._dt.step("direction", False, f"belirsiz {detail}")
+            if self._scan_count % 15 == 1:
+                log.info(f"[15m] SKIP: direction uncertain {detail}")
             return
+        self._dt.step("direction", True, f"{direction.upper()} score={dir_score:+.2f} [{' '.join(dir_details)}]")
 
         # 11. MACRO TREND FILTER: 15m + 30m BTC trend
         macro_15m = self.binance.get_momentum(seconds=900)
@@ -173,35 +235,110 @@ class BTC15MinStrategy(BTC5MinFastStrategy):
                 macro = "down"
 
         if macro and macro != direction:
-            if self._scan_count % 30 == 1:
-                log.info(f"[15m] SKIP: {direction.upper()} vs macro trend {macro.upper()} (15m={macro_15m:.6f})")
-            return
+            macro_strength = abs(macro_15m) if macro_15m else 0
+            if macro_strength > 0.001:
+                log.info(f"[15m] SKIP: {direction.upper()} vs STRONG macro trend {macro.upper()} (15m={macro_15m:.6f})")
+                self._dt.step("trend", False, f"macro {macro.upper()} vs {direction.upper()} GUCLU TERS")
+                return
+            # Zayif ters trend: devam et, edge'de ceza olarak yansiyacak
+            log.info(f"[15m] WARN: {direction.upper()} vs weak macro {macro.upper()} (15m={macro_15m:.6f}) — devam")
 
-        # 12. OBSERVATION TREND FILTER
-        obs_consistency_min = getattr(self.cfg, "OBSERVATION_CONSISTENCY_MIN_15M", 0.50)
+        # 12. OBSERVATION TREND FILTER — skor sistemine entegre, ayri engelleme yok
+        # Observation zaten dir_score'a dahil edildi; sadece loglama
         if self._obs_result:
             obs_dir = self._obs_result["direction"]
             obs_consistency = self._obs_result["consistency"]
+            if obs_dir != direction and obs_consistency >= getattr(self.cfg, "OBSERVATION_CONSISTENCY_MIN_15M", 0.50):
+                log.info(
+                    f"[15m] WARN: obs {obs_dir.upper()} (c={obs_consistency:.2f}) vs direction {direction.upper()}"
+                )
 
-            if obs_dir != direction:
-                if self._scan_count % 30 == 1:
-                    log.info(
-                        f"[15m] SKIP: {direction.upper()} vs observation trend {obs_dir.upper()} "
-                        f"(consistency={obs_consistency:.2f})"
-                    )
-                return
+        self._dt.step("trend", True, f"macro={macro or 'neutral'} obs={'aligned' if self._obs_result else 'N/A'}")
 
-            if obs_consistency < obs_consistency_min:
-                if self._scan_count % 30 == 1:
-                    log.info(
-                        f"[15m] SKIP: low observation consistency={obs_consistency:.2f} "
-                        f"(min={obs_consistency_min})"
-                    )
-                return
+        # ── 12b. DYNAMIC ENTRY TIMING (15m) ───────────────────────
+        signal_strength = 0.0
+        if self._obs_result:
+            oc = self._obs_result["consistency"]
+            if oc >= 0.70:
+                signal_strength += 0.30
+            elif oc >= 0.60:
+                signal_strength += 0.20
+            elif oc >= 0.55:
+                signal_strength += 0.10
+            if abs(self._obs_result["trend_pct"]) > 0.001:
+                signal_strength += 0.05
+        abs_delta = abs(delta)
+        if abs_delta >= 0.002:
+            signal_strength += 0.30
+        elif abs_delta >= 0.001:
+            signal_strength += 0.20
+        elif abs_delta >= 0.0005:
+            signal_strength += 0.10
+        if momentum is not None:
+            mom_aligned = (direction == "up" and momentum > 0) or (direction == "down" and momentum < 0)
+            if mom_aligned and abs(momentum) > 0.0003:
+                signal_strength += 0.20
+            elif mom_aligned and abs(momentum) > 0.0001:
+                signal_strength += 0.10
+        if macro == direction:
+            signal_strength += 0.15
+        min_signal = getattr(self.cfg, "MIN_SIGNAL_STRENGTH_15M", 0.0)
+        if signal_strength < min_signal:
+            if self._scan_count % 15 == 1:
+                log.info(
+                    f"[15m] SKIP: weak signal score={signal_strength:.2f} < min={min_signal:.2f}"
+                )
+            self._dt.step("signal_strength", False, f"weak {signal_strength:.2f} < {min_signal:.2f}")
+            return
+
+        if signal_strength >= 0.70:
+            dynamic_min = 30
+            strength_label = "VERY_STRONG"
+        elif signal_strength >= 0.50:
+            dynamic_min = 45
+            strength_label = "STRONG"
+        elif signal_strength >= 0.30:
+            dynamic_min = 60
+            strength_label = "MODERATE"
+        else:
+            dynamic_min = 90
+            strength_label = "WEAK"
+
+        # Hard floor is part of timing check
+        if remaining < dynamic_min:
+            if self._scan_count % 15 == 1:
+                log.info(
+                    f"[15m] SKIP: too late for {strength_label} signal "
+                    f"(remaining={remaining:.0f}s < min={dynamic_min}s, "
+                    f"score={signal_strength:.2f})"
+                )
+            self._dt.step("signal_strength", False, f"too late {strength_label} rem={remaining:.0f}s < {dynamic_min}s")
+            return
+
+        self._dt.step("signal_strength", True, f"{strength_label} score={signal_strength:.2f} rem={remaining:.0f}s")
+        log.info(
+            f"[15m] TIMING OK: {strength_label} signal score={signal_strength:.2f} "
+            f"remaining={remaining:.0f}s (min={dynamic_min}s)"
+        )
 
         # 13-17: Fresh price, orderbook, edge, validation, execution
         # Reuse parent logic from here via _execute_entry
-        await self._execute_entry(market, market_id, direction, delta, momentum, vol, remaining, macro)
+        await self._execute_entry(
+            market, market_id, direction, delta, momentum, vol, remaining, macro, signal_strength
+        )
+
+    async def _get_candle_signal(self) -> dict | None:
+        """1-saniye mumlarindan trend analizi yap (15m override)."""
+        try:
+            limit = getattr(self.cfg, "CANDLE_1S_LIMIT_15M", 300)
+            klines = await self.binance.fetch_klines_1s(limit=limit)
+            if not klines or len(klines) < 10:
+                return None
+            from signals.candles import analyze_candles
+            return analyze_candles(klines, window="15m")
+        except Exception as e:
+            log.debug(f"[15m] Candle signal failed: {e}")
+            return None
 
     def calculate_edge(
         self,
@@ -242,7 +379,7 @@ class BTC15MinStrategy(BTC5MinFastStrategy):
         edge = p_real - pm_implied - fee - self.cfg.SLIPPAGE_ESTIMATE - self.cfg.FEE_BUFFER
         return edge
 
-    async def _execute_entry(self, market, market_id, direction, delta, momentum, vol, remaining, macro):
+    async def _execute_entry(self, market, market_id, direction, delta, momentum, vol, remaining, macro, signal_strength):
         """Execute trade entry — extracted from parent scan() steps 13-17."""
         import asyncio
 
@@ -277,23 +414,72 @@ class BTC15MinStrategy(BTC5MinFastStrategy):
                 log.info(f"[15m] CLOB LIVE PRICE: UP={market['up_price']} DOWN={market['down_price']}")
 
         # 14b. CLOB fiyat zorunlulugu — Gamma API bu marketlerde yanlis fiyat veriyor
-        if not orderbook or not (orderbook.get("bids") and orderbook.get("asks")):
-            if self._scan_count % 30 == 1:
-                log.info("[15m] SKIP: no CLOB orderbook — Gamma price unreliable")
+        has_ob = orderbook and orderbook.get("bids") and orderbook.get("asks")
+        if not self._dt.step("orderbook", bool(has_ob), "OK" if has_ob else "no CLOB orderbook"):
+            log.info(f"[15m] SKIP: no CLOB orderbook — remaining={remaining:.0f}s token={token_id[:12] if token_id else 'None'}")
             return
 
-        edge = 0.05  # Fixed edge
+        price = market.get("up_price" if direction == "up" else "down_price", 0.5)
+        edge = self.calculate_edge_v2(
+            delta_pct=delta,
+            momentum=momentum,
+            volatility=vol,
+            seconds_remaining=remaining,
+            market=market,
+            direction=direction,
+            ob_imbalance=(ob_metrics or {}).get("imbalance"),
+        )
+        if edge is None:
+            self._dt.step("edge_calc", False, "edge=None")
+            return
+
+        if not self._dt.step("edge_calc", edge >= self.cfg.EDGE_THRESHOLD, f"edge={edge:.4f} thr={self.cfg.EDGE_THRESHOLD:.4f}"):
+            if self._scan_count % 15 == 1:
+                log.info(f"[15m] SKIP: low edge {edge:.4f} < {self.cfg.EDGE_THRESHOLD:.4f}")
+            return
 
         # 15. Position sizing
-        price = market.get("up_price" if direction == "up" else "down_price", 0.5)
-        size = self.cfg.TRADE_SIZE_USD
+        if getattr(self.cfg, "RISK_POSITION_SIZING_ENABLED", True):
+            depth_usd = (ob_metrics or {}).get("ask_depth_usd", 0.0)
+            size = self.risk.position_size(edge=edge, price=price, orderbook_depth_usd=depth_usd)
+            if size <= 0:
+                if self._scan_count % 15 == 1:
+                    log.info("[15m] SKIP: position_size=0 (risk sizing)")
+                return
+        else:
+            size = self.cfg.TRADE_SIZE_USD
+
+        if signal_strength >= 0.70:
+            size *= 1.20
+        elif signal_strength < 0.40:
+            size *= 0.80
+        size = round(min(size, self.cfg.TRADE_SIZE_USD), 2)
+        if size <= 0:
+            return
+
+        # Executor min 5 share uyguluyor; validation/execution ayni notional uzerinden ilerlesin
+        if price > 0:
+            import math
+            shares = math.ceil(size / price * 100) / 100
+            if shares < 5:
+                size = round(5.0 * price, 2)
 
         # 15b. PRICE CAP: cok pahali giris = kotu risk/odul orani
         max_price = getattr(self.cfg, "MAX_ENTRY_PRICE_15M", 0.80)
         if price > max_price:
-            if self._scan_count % 30 == 1:
-                log.info(f"[15m] SKIP: entry price too high {price:.4f} > {max_price}")
+            log.info(f"[15m] SKIP: entry price too high {price:.4f} > {max_price}")
+            self._dt.step("price_risk", False, f"price {price:.4f} > cap {max_price}")
             return
+
+        # 15c. Reward/Risk gate
+        reward_risk = ((1.0 - price) / price) if price > 0 else 0.0
+        min_rr = getattr(self.cfg, "MIN_REWARD_RISK_RATIO_15M", 0.0)
+        if reward_risk < min_rr:
+            log.info(f"[15m] SKIP: reward/risk too low {reward_risk:.3f} < {min_rr:.3f}")
+            self._dt.step("price_risk", False, f"R/R {reward_risk:.3f} < {min_rr:.3f}")
+            return
+
+        self._dt.step("price_risk", True, f"price={price:.4f} R/R={reward_risk:.3f}")
 
         # 16. Execution Validation
         t_detect = time.monotonic()
@@ -310,16 +496,24 @@ class BTC15MinStrategy(BTC5MinFastStrategy):
 
             if not validation["can_execute"]:
                 reject_reason = validation["rejection_reason"]
-                if self.cfg.PAPER_TRADING:
-                    log.debug(f"[15m] Validation info (paper skip): {reject_reason}")
+                bypass = self.cfg.PAPER_TRADING and getattr(
+                    self.cfg, "ALLOW_PAPER_VALIDATION_BYPASS", False
+                )
+                if bypass:
+                    log.debug(f"[15m] Validation bypassed (paper mode): {reject_reason}")
+                    self._dt.step("validation", True, f"bypassed: {reject_reason}")
                 else:
                     log.info(f"[15m] Validation REJECTED: {reject_reason}")
+                    self._dt.step("validation", False, reject_reason)
                     return
             else:
                 log.info(
                     f"[15m] Validation PASSED: net=${validation['net_profit_usd']:.4f} "
                     f"slip={validation['slippage_pct']:.4f} fq={fill_quality:.2f}"
                 )
+                self._dt.step("validation", True, f"fq={fill_quality:.2f}")
+        else:
+            self._dt.step("validation", True, "no validator")
 
         # 17. Execute
         btc_price = self.binance.price or 0
@@ -344,7 +538,7 @@ class BTC15MinStrategy(BTC5MinFastStrategy):
             )
 
         log.info(
-            f"[15m] SIGNAL: {direction.upper()} delta={delta:.6f} "
+            f"[15m] SIGNAL: {direction.upper()} edge={edge:.4f} delta={delta:.6f} "
             f"size=${size:.2f} remaining={remaining:.0f}s"
             f"{obs_info}{macro_info}"
         )
@@ -362,6 +556,8 @@ class BTC15MinStrategy(BTC5MinFastStrategy):
 
         t_exec = time.monotonic()
         latency_ms = (t_exec - t_detect) * 1000
+
+        self._dt.step("execution", bool(tid), f"tid={tid}" if tid else "execution failed")
 
         if tid:
             self._has_position = True

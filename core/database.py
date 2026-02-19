@@ -298,6 +298,8 @@ class TradeDB:
                 "spread_reject": "INTEGER DEFAULT 0",
                 "competition_score": "REAL DEFAULT 0",
                 "dynamic_price_suggested": "REAL DEFAULT 0",
+                "up_entry_price": "REAL DEFAULT 0",
+                "down_entry_price": "REAL DEFAULT 0",
                 "exit_reason": "TEXT DEFAULT ''",
                 "notes": "TEXT DEFAULT ''",
             }
@@ -436,6 +438,8 @@ class TradeDB:
         spread_reject: bool = False,
         competition_score: float = 0.0,
         dynamic_price_suggested: float = 0.0,
+        up_entry_price: float = 0.0,
+        down_entry_price: float = 0.0,
         exit_reason: str = "",
         notes: str = "",
     ) -> int:
@@ -450,9 +454,11 @@ class TradeDB:
                 up_token_id, down_token_id, up_order_id, down_order_id,
                 up_fill_shares, down_fill_shares, cost_usd, payout_usd, fees_usd, pnl_usd,
                 lock_skipped, lock_skip_reason, liquidity_reject, spread_reject,
-                competition_score, dynamic_price_suggested, exit_reason, notes
+                competition_score, dynamic_price_suggested,
+                up_entry_price, down_entry_price,
+                exit_reason, notes
             )
-            VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+            VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
             """,
             (
                 ts_open,
@@ -483,6 +489,8 @@ class TradeDB:
                 1 if spread_reject else 0,
                 float(competition_score),
                 float(dynamic_price_suggested),
+                float(up_entry_price),
+                float(down_entry_price),
                 exit_reason,
                 notes,
             ),
@@ -555,6 +563,8 @@ class TradeDB:
             "spread_reject",
             "competition_score",
             "dynamic_price_suggested",
+            "up_entry_price",
+            "down_entry_price",
             "exit_reason",
             "notes",
         }

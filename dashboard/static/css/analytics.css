@@ -1,0 +1,53 @@
+/* Analytics Grid */
+.analytics-grid{display:grid;grid-template-columns:1fr 1fr 1fr;gap:12px;padding:0 24px 12px}
+.analytics-2col{display:grid;grid-template-columns:1fr 1fr;gap:12px;padding:0 24px 12px}
+
+/* Learning Panel / Factors */
+.factor-group{margin-bottom:14px}
+.factor-group-title{font-size:12px;font-weight:600;margin-bottom:8px;display:flex;align-items:center;gap:6px}
+.factor-group-title.win{color:var(--green)}
+.factor-group-title.loss{color:var(--red)}
+.factor-row{display:flex;align-items:center;gap:8px;margin-bottom:6px;font-size:12px}
+.factor-label{width:130px;color:var(--text2);flex-shrink:0}
+.factor-bar-bg{flex:1;height:16px;background:var(--bg3);border-radius:3px;overflow:hidden;position:relative}
+.factor-bar{height:100%;border-radius:3px;transition:width .5s}
+.factor-bar.win{background:var(--green)}
+.factor-bar.loss{background:var(--red)}
+.factor-count{width:32px;text-align:right;color:var(--text2);font-size:11px;flex-shrink:0}
+
+/* Hourly Heatmap */
+.heatmap{display:grid;grid-template-columns:repeat(12,1fr);gap:3px;margin-bottom:14px}
+.heat-cell{aspect-ratio:1;border-radius:4px;display:flex;flex-direction:column;
+  align-items:center;justify-content:center;font-size:9px;cursor:default;
+  transition:transform .1s;border:1px solid transparent}
+.heat-cell:hover{transform:scale(1.15);border-color:var(--text3)}
+.heat-cell .hour{color:var(--text3);font-weight:600}
+.heat-cell .wr{font-weight:700;font-size:10px}
+
+/* Delta Bars */
+.delta-row{display:flex;align-items:center;gap:8px;margin-bottom:8px}
+.delta-label{width:90px;font-size:11px;color:var(--text2);flex-shrink:0}
+.delta-bar-container{flex:1;display:flex;align-items:center;gap:6px}
+.delta-bar-track{flex:1;height:20px;background:var(--bg3);border-radius:4px;overflow:hidden;position:relative}
+.delta-bar-fill{height:100%;border-radius:4px;display:flex;align-items:center;
+  justify-content:flex-end;padding-right:6px;font-size:10px;font-weight:600;color:#fff;
+  transition:width .5s}
+.delta-count{width:40px;font-size:11px;color:var(--text2);text-align:right;flex-shrink:0}
+
+/* Risk Panel */
+.risk-grid{display:grid;grid-template-columns:1fr 1fr;gap:10px;margin-bottom:14px}
+.risk-item{background:var(--bg);border-radius:8px;padding:12px;text-align:center}
+.risk-item .label{font-size:10px;color:var(--text2);text-transform:uppercase;
+  letter-spacing:0.5px;margin-bottom:4px}
+.risk-item .value{font-size:20px;font-weight:700}
+#pnl-chart-container{height:140px;margin-top:8px}
+
+/* AI Insights */
+.insights-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(280px,1fr));gap:10px}
+.insight-card{display:flex;align-items:flex-start;gap:10px;padding:12px 14px;
+  border-radius:8px;font-size:13px;line-height:1.4}
+.insight-card.positive{background:rgba(14,203,129,0.08);border:1px solid rgba(14,203,129,0.2)}
+.insight-card.negative{background:rgba(246,70,93,0.08);border:1px solid rgba(246,70,93,0.2)}
+.insight-card.neutral{background:rgba(30,144,255,0.08);border:1px solid rgba(30,144,255,0.2)}
+.insight-icon{font-size:20px;flex-shrink:0;margin-top:1px}
+.insight-text{color:var(--text)}

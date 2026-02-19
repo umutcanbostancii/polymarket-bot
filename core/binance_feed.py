@@ -42,6 +42,8 @@ class BinanceFeed:
         self._warmup_complete: bool = False
         self._reference_price: Optional[float] = None
         self._reference_ts: Optional[float] = None
+        self._kline_1s_cache: Optional[list] = None
+        self._kline_1s_cache_ts: float = 0.0
 
     def on_price(self, cb: Callable):
         self._callbacks.append(cb)
@@ -155,6 +157,18 @@ class BinanceFeed:
         except Exception as e:
             log.error(f"fetch_klines error: {e}")
             return []
+
+    async def fetch_klines_1s(self, limit: int = 60) -> list[dict]:
+        """1-saniye mumlarini cek (cache: 5s TTL)."""
+        now = time.time()
+        if self._kline_1s_cache and now - self._kline_1s_cache_ts < 5.0:
+            return self._kline_1s_cache[-limit:]
+
+        klines = await self.fetch_klines(interval="1s", limit=limit)
+        if klines:
+            self._kline_1s_cache = klines
+            self._kline_1s_cache_ts = now
+        return (self._kline_1s_cache or [])[-limit:]
 
     async def fetch_depth(self, limit: int = 20) -> Optional[dict]:
         """Binance orderbook depth snapshot.

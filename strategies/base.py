@@ -15,6 +15,10 @@ class BaseStrategy(ABC):
         self.db = db
         self.risk = risk
         self.executor = executor
+        self._dt = None  # DecisionTracker, subclass'ta set edilir
+
+    def decision_snapshot(self):
+        return self._dt.snapshot() if self._dt else None
 
     @abstractmethod
     async def scan(self):

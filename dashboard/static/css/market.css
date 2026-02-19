@@ -1,0 +1,39 @@
+/* Market Panel */
+.market-info{padding:16px}
+.market-name{font-size:14px;font-weight:600;margin-bottom:10px;line-height:1.4}
+.countdown-row{display:flex;align-items:center;justify-content:space-between;margin-bottom:14px}
+.countdown{font-size:34px;font-weight:700;font-variant-numeric:tabular-nums;color:var(--gold)}
+.countdown.urgent{color:var(--red);animation:pulse 1s infinite}
+.countdown-label{font-size:11px;color:var(--text2)}
+.price-row{display:grid;grid-template-columns:1fr 1fr;gap:8px;margin-bottom:14px}
+.price-box{padding:10px;border-radius:8px;text-align:center}
+.price-box.up{background:rgba(14,203,129,0.1);border:1px solid rgba(14,203,129,0.3)}
+.price-box.down{background:rgba(246,70,93,0.1);border:1px solid rgba(246,70,93,0.3)}
+.price-box .label{font-size:10px;text-transform:uppercase;letter-spacing:1px;margin-bottom:3px}
+.price-box.up .label{color:var(--green)}.price-box.down .label{color:var(--red)}
+.price-box .val{font-size:20px;font-weight:700}
+.price-box.up .val{color:var(--green)}.price-box.down .val{color:var(--red)}
+.market-meta{display:flex;gap:16px;margin-bottom:12px}
+.market-meta .item{font-size:12px;color:var(--text2)}
+.market-meta .item b{color:var(--text);font-weight:600}
+.progress-bar{height:4px;background:var(--bg3);border-radius:2px;overflow:hidden;margin-bottom:14px}
+.progress-bar .fill{height:100%;border-radius:2px;transition:width 1s linear}
+.progress-bar .fill.early{background:var(--green)}
+.progress-bar .fill.mid{background:var(--gold)}
+.progress-bar .fill.late{background:var(--red)}
+
+/* Depth/Orderbook */
+.depth-title{font-size:12px;font-weight:600;color:var(--text2);margin-bottom:6px;
+  text-transform:uppercase;letter-spacing:0.5px}
+.depth-grid{display:grid;grid-template-columns:1fr 1fr;gap:2px}
+.depth-side-header{font-size:10px;color:var(--text3);padding:3px 8px;text-transform:uppercase;letter-spacing:0.5px}
+.depth-level{display:flex;align-items:center;padding:2px 8px;position:relative;
+  font-size:11px;font-variant-numeric:tabular-nums}
+.depth-level .bar{position:absolute;top:0;bottom:0;opacity:0.15;border-radius:2px}
+.depth-level.bid .bar{right:0;background:var(--green)}
+.depth-level.ask .bar{left:0;background:var(--red)}
+.depth-level .price{flex:1;position:relative;z-index:1}
+.depth-level .size{position:relative;z-index:1;color:var(--text2)}
+.depth-level.bid .price{color:var(--green);text-align:right}
+.depth-level.ask .price{color:var(--red)}
+.depth-level.bid{flex-direction:row-reverse}

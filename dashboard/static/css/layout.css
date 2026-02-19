@@ -1,0 +1,44 @@
+/* Header */
+.header{display:flex;align-items:center;justify-content:space-between;
+  padding:14px 24px;border-bottom:1px solid var(--border);background:var(--bg4)}
+.header-left{display:flex;align-items:center;gap:12px}
+.logo{font-size:22px;font-weight:700;color:var(--gold);letter-spacing:-0.5px}
+.logo span{color:var(--text2);font-weight:400;font-size:14px;margin-left:8px}
+.header-right{display:flex;align-items:center;gap:16px}
+.status-badge{display:flex;align-items:center;gap:6px;padding:6px 14px;
+  border-radius:20px;font-size:13px;font-weight:600}
+.status-badge.running{background:rgba(14,203,129,0.15);color:var(--green)}
+.status-badge.stopped{background:rgba(246,70,93,0.15);color:var(--red)}
+.status-dot{width:8px;height:8px;border-radius:50%;background:currentColor;animation:pulse 2s infinite}
+@keyframes pulse{0%,100%{opacity:1}50%{opacity:0.4}}
+.mode-badge{padding:6px 14px;border-radius:20px;font-size:13px;font-weight:600;
+  background:rgba(30,144,255,0.15);color:var(--blue)}
+
+/* Stats Cards */
+.stats-row{display:grid;grid-template-columns:repeat(7,1fr);gap:10px;padding:14px 24px}
+.stat-card{background:var(--bg2);border:1px solid var(--border);border-radius:var(--radius);
+  padding:14px 16px;transition:transform .15s}
+.stat-card:hover{transform:translateY(-2px)}
+.stat-card.wallet{background:linear-gradient(135deg,#1a1a2e 0%,#16213e 100%);
+  border-color:var(--gold)}
+.stat-label{font-size:11px;color:var(--text2);text-transform:uppercase;
+  letter-spacing:0.5px;margin-bottom:4px}
+.stat-value{font-size:22px;font-weight:700;font-variant-numeric:tabular-nums}
+.stat-sub{font-size:11px;color:var(--text2);margin-top:3px}
+.stat-value.positive{color:var(--green)}
+.stat-value.negative{color:var(--red)}
+.stat-value.gold{color:var(--gold)}
+
+/* Panels */
+.panel{background:var(--bg2);border:1px solid var(--border);border-radius:var(--radius);overflow:hidden}
+.panel-header{display:flex;align-items:center;justify-content:space-between;
+  padding:12px 16px;border-bottom:1px solid var(--border)}
+.panel-title{font-size:14px;font-weight:600}
+.main-grid{display:grid;grid-template-columns:1fr 280px 280px 280px;gap:12px;padding:0 24px 12px}
+#chart-container{height:400px}
+.interval-btns{display:flex;gap:4px}
+.interval-btn{padding:4px 12px;border-radius:6px;border:1px solid var(--border);
+  background:transparent;color:var(--text2);font-size:12px;cursor:pointer;transition:all .15s}
+.interval-btn.active{background:var(--blue);color:#fff;border-color:var(--blue)}
+.interval-btn:hover:not(.active){background:var(--bg3)}
+.panel-body{padding:16px}

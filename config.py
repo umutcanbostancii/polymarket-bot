@@ -58,8 +58,8 @@ class Config:
     # Edge model tuning
     MOMENTUM_WEIGHT: float = 50.0         # how much delta amplifies probability
     REVERSAL_RISK_WEIGHT: float = 0.5     # how much volatility penalizes
-    SLIPPAGE_ESTIMATE: float = 0.0        # paper mode: no slippage
-    FEE_BUFFER: float = 0.0              # paper mode: no extra buffer
+    SLIPPAGE_ESTIMATE: float = 0.01       # live: ~1% ince marketler
+    FEE_BUFFER: float = 0.005             # 0.5% ekstra buffer
 
     # DeepSeek AI (PDF s.35)
     DEEPSEEK_API_KEY: str = os.getenv("DEEPSEEK_API_KEY", "")
@@ -166,20 +166,26 @@ class Config:
     # ── Arbitrage Bot (45c limit) ──
     ARB_ENABLED: bool = True
     ARB_DEFAULT_MODE: str = "paper"  # paper|live
+    ARB_FORCE_PAPER: bool = True  # Hard lock: arb ASLA canli olmaz
     ARB_SYMBOLS: str = "BTC,ETH"
     ARB_ENTRY_PRICE_LIMIT: float = 0.45
     ARB_BAILOUT_PRICE: float = 0.72
     ARB_ENTRY_DELAY_SECONDS: int = 15
-    ARB_ENTRY_CUTOFF_SECONDS: int = 180
-    ARB_BAILOUT_CUTOFF_SECONDS: int = 120
+    ARB_ENTRY_CUTOFF_SECONDS: int = 600    # 10dk: 15m window'un buyuk bolumunde giris yapabilsin
+    ARB_BAILOUT_CUTOFF_SECONDS: int = 60   # market bitmeden 60s once bail
     ARB_SCAN_INTERVAL_SECONDS: float = 5.0
     ARB_ORDER_POLL_SECONDS: float = 4.0
     ARB_ORDER_TIMEOUT_SECONDS: int = 90
     ARB_CYCLE_BUDGET_USD: float = 20.0
     ARB_MAX_ACTIVE_CAPITAL_USD: float = 120.0
     ARB_MAX_OPEN_CYCLES: int = 4
-    ARB_MAX_SPREAD_PCT: float = 0.04
-    ARB_MIN_LIQUIDITY_USD: float = 100.0
+    ARB_MAX_SPREAD_PCT: float = 0.15       # ince marketlerde daha toleransli
+    ARB_MIN_LIQUIDITY_USD: float = 10.0
+    ARB_DYNAMIC_ENTRY_ENABLED: bool = True        # per-side pricing aktif
+    ARB_MIN_EDGE_PER_SHARE: float = 0.02          # min garantili kar/share ($1 - up - down >= 0.02)
+    ARB_MAX_COMBINED_COST: float = 0.98           # up_ask + down_ask < 0.98
+    ARB_MAX_SINGLE_SIDE_PRICE: float = 0.55       # tek taraf icin max fiyat
+    ARB_PRICE_BUFFER: float = 0.005               # ask ustune eklenen buffer (daha iyi fill)
     ARB_ENABLE_DYNAMIC_PRICING: bool = False
     ARB_DYNAMIC_PRICE_MIN: float = 0.44
     ARB_DYNAMIC_PRICE_MAX: float = 0.46
@@ -188,7 +194,7 @@ class Config:
     ARB_DYNAMIC_MAX_BAIL_RATE: float = 0.35
     ARB_MAX_CONSECUTIVE_BAILS: int = 5
     ARB_MAX_CONSECUTIVE_ERRORS: int = 8
-    ARB_LOCK_MAIN_STRATEGY: bool = True
+    ARB_LOCK_MAIN_STRATEGY: bool = False  # paper mode'da bagimsiz calissin
 
     # Infra
     DB_PATH: str = "trades.db"

@@ -1,0 +1,25 @@
+/* Trade Size Panel */
+.size-panel-body{padding:16px}
+.size-current-display{text-align:center;margin-bottom:16px;padding:14px;
+  background:linear-gradient(135deg,rgba(240,185,11,0.08) 0%,rgba(240,185,11,0.02) 100%);
+  border:1px solid rgba(240,185,11,0.2);border-radius:10px}
+.size-current-label{font-size:10px;color:var(--text2);text-transform:uppercase;
+  letter-spacing:1px;margin-bottom:4px}
+.size-current-value{font-size:32px;font-weight:700;color:var(--gold);
+  font-variant-numeric:tabular-nums}
+.size-presets{display:grid;grid-template-columns:repeat(4,1fr);gap:6px;margin-bottom:14px}
+.size-btn{padding:8px 4px;border-radius:8px;border:1px solid var(--border);
+  background:var(--bg);color:var(--text2);font-size:13px;cursor:pointer;
+  transition:all .15s;font-weight:600;text-align:center}
+.size-btn:hover{background:var(--bg3);color:var(--text);border-color:var(--text3)}
+.size-btn.active{background:var(--gold);color:#000;border-color:var(--gold);font-weight:700}
+.size-custom-row{display:flex;align-items:center;gap:6px}
+.size-custom-row span{font-size:14px;color:var(--text2);font-weight:700}
+.size-input{flex:1;padding:8px 10px;border-radius:8px;border:1px solid var(--border);
+  background:var(--bg);color:var(--text);font-size:13px;text-align:right;
+  font-variant-numeric:tabular-nums}
+.size-input:focus{outline:none;border-color:var(--gold)}
+.size-apply{padding:8px 14px;border-radius:8px;border:1px solid var(--gold);
+  background:rgba(240,185,11,0.15);color:var(--gold);font-size:12px;cursor:pointer;
+  font-weight:700;transition:all .15s;white-space:nowrap}
+.size-apply:hover{background:var(--gold);color:#000}

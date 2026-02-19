@@ -14,9 +14,14 @@ from core.execution_validator import ExecutionValidator
 from core.executor import Executor
 from core.monitoring import MonitoringEngine
 from core.polymarket_client import PolymarketClient
+from core.redeemer import PositionRedeemer
 from core.risk_manager import RiskManager
 from strategies.btc_5min_fast import BTC5MinFastStrategy
 from strategies.btc_15min import BTC15MinStrategy
+from strategies.btc_5min_test import BTC5MinTestStrategy
+from strategies.btc_15min_test import BTC15MinTestStrategy
+from signals.aggregator import SignalAggregator
+from core.signal_feedback import SignalFeedback
 from utils.logger import setup_logging
 
 setup_logging(config.LOG_LEVEL)
@@ -86,6 +91,7 @@ class Bot:
         self.executor = Executor(config, self.db)
         self.validator = ExecutionValidator(config)
         self.monitoring = MonitoringEngine(config)
+        self.redeemer = PositionRedeemer(config, db_path=config.DB_PATH)
 
         # DeepSeek AI predictor (opsiyonel)
         self.predictor = None
@@ -113,11 +119,34 @@ class Bot:
             predictor=self.predictor,
         )
 
+        # Test mode strategies
+        self.aggregator = SignalAggregator(config)
+        self.feedback = SignalFeedback(config.DB_PATH) if getattr(config, "FEEDBACK_ENABLED", True) else None
+
+        self.strategy_test5 = BTC5MinTestStrategy(
+            config, self.poly, self.binance, self.db, self.risk, self.executor,
+            validator=self.validator,
+            monitoring=self.monitoring,
+            predictor=self.predictor,
+            aggregator=self.aggregator,
+            feedback=self.feedback,
+        )
+        self.strategy_test15 = BTC15MinTestStrategy(
+            config, self.poly, self.binance, self.db, self.risk, self.executor,
+            validator=self.validator,
+            monitoring=self.monitoring,
+            predictor=self.predictor,
+            aggregator=self.aggregator,
+            feedback=self.feedback,
+        )
+
         self._running = False
         self._tasks = []
         self._start_time = 0.0
         self._15m_enabled_cache = False
         self._15m_enabled_check_ts = 0.0
+        self._test_enabled_cache = False
+        self._test_enabled_check_ts = 0.0
 
     async def _recover_open_positions(self):
         """Botrecover başladığında açık pozisyonları bul ve resolution zamanla."""
@@ -161,12 +190,39 @@ class Bot:
         self._15m_enabled_cache = os.path.exists(config.MARKET_15M_FILE)
         return self._15m_enabled_cache
 
+    def _is_test_mode_enabled(self) -> bool:
+        """Check if test mode is enabled (cached for 10s)."""
+        now = time.time()
+        if now - self._test_enabled_check_ts < 10:
+            return self._test_enabled_cache
+        self._test_enabled_check_ts = now
+        self._test_enabled_cache = os.path.exists(
+            getattr(config, "TEST_MODE_FILE", "/tmp/polymarket_bot_test_enabled")
+        )
+        return self._test_enabled_cache
+
     async def start(self):
+        # Pre-flight kontrol: live mode icin credential dogrulama
+        if not config.PAPER_TRADING:
+            required = {
+                "POLY_API_KEY": config.POLY_API_KEY,
+                "POLY_API_SECRET": config.POLY_API_SECRET,
+                "POLY_API_PASSPHRASE": config.POLY_API_PASSPHRASE,
+                "POLY_PRIVATE_KEY": config.POLY_PRIVATE_KEY,
+                "POLY_FUNDER": config.POLY_FUNDER,
+            }
+            missing = [k for k, v in required.items() if not str(v).strip()]
+            if missing:
+                raise RuntimeError(f"LIVE MODE BLOCKED: missing: {', '.join(missing)}")
+            if config.BANKROLL < 10:
+                raise RuntimeError(f"LIVE MODE BLOCKED: BANKROLL=${config.BANKROLL} < $10")
+            log.info("PRE-FLIGHT OK: credentials verified, BANKROLL=$%.2f", config.BANKROLL)
+
         mode = "PAPER" if config.PAPER_TRADING else "LIVE"
         log.info("=" * 60)
-        log.info(f"BTC 5-min + 15-min Fast Loop Bot | mode={mode}")
+        log.info(f"BTC 15-min Fast Loop Bot | mode={mode}")
         log.info(f"Trade size: ${config.TRADE_SIZE_USD} | Edge threshold: {config.EDGE_THRESHOLD}")
-        log.info(f"Loop interval: {config.LOOP_INTERVAL}s | 15m: {'ON' if self._is_15m_enabled() else 'OFF'}")
+        log.info(f"Loop interval: {config.LOOP_INTERVAL}s | 5m: {'ON' if getattr(config, 'MARKET_5M_ENABLED', True) else 'OFF'} | 15m: {'ON' if self._is_15m_enabled() else 'OFF'} | Test: {'ON' if self._is_test_mode_enabled() else 'OFF'}")
         log.info("=" * 60)
 
         self.db.start()
@@ -189,6 +245,7 @@ class Bot:
             asyncio.create_task(self._fast_loop()),
             asyncio.create_task(self._stats_loop()),
             asyncio.create_task(self._status_writer()),
+            asyncio.create_task(self._redeem_loop()),
         ]
 
         try:
@@ -224,13 +281,15 @@ class Bot:
         log.info(f"Fast loop started (interval={config.LOOP_INTERVAL}s)")
 
         while self._running:
-            try:
-                await self.strategy.scan()
-            except asyncio.CancelledError:
-                raise
-            except Exception as exc:
-                log.error(f"Strategy scan error: {exc}", exc_info=True)
-                await asyncio.sleep(5)
+            # 5-min strategy (if enabled via config)
+            if getattr(config, "MARKET_5M_ENABLED", True):
+                try:
+                    await self.strategy.scan()
+                except asyncio.CancelledError:
+                    raise
+                except Exception as exc:
+                    log.error(f"Strategy scan error: {exc}", exc_info=True)
+                    await asyncio.sleep(5)
 
             # 15m strategy (if enabled via dashboard toggle)
             if self._is_15m_enabled():
@@ -241,6 +300,23 @@ class Bot:
                 except Exception as exc:
                     log.error(f"15m strategy scan error: {exc}", exc_info=True)
 
+            # Test mode strategies
+            if self._is_test_mode_enabled():
+                try:
+                    await self.strategy_test5.scan()
+                except asyncio.CancelledError:
+                    raise
+                except Exception as exc:
+                    log.error(f"Test 5m strategy scan error: {exc}", exc_info=True)
+
+                try:
+                    await self.strategy_test15.scan()
+                except asyncio.CancelledError:
+                    raise
+                except Exception as exc:
+                    log.error(f"Test 15m strategy scan error: {exc}", exc_info=True)
+
+            self._write_decisions()
             await asyncio.sleep(config.LOOP_INTERVAL)
 
     async def _stats_loop(self):
@@ -284,6 +360,66 @@ class Bot:
             except Exception as exc:
                 log.error(f"Stats loop error: {exc}")
 
+    async def _redeem_loop(self):
+        """Redeem resolved winning positions every 5 minutes."""
+        # Skip in paper mode
+        if config.PAPER_TRADING:
+            log.info("Redeem loop disabled (paper mode)")
+            return
+
+        # Wait 60s before first scan (let markets settle)
+        await asyncio.sleep(60)
+        log.info("Redeem loop started (interval=300s)")
+
+        while self._running:
+            try:
+                results = await asyncio.get_event_loop().run_in_executor(
+                    None, self.redeemer.scan_and_redeem
+                )
+                for r in results:
+                    log.info(
+                        f"Redeemed: trade=#{r['trade_id']} "
+                        f"condition={r['condition_id'][:12]}... "
+                        f"tx={r['tx_hash']}"
+                    )
+            except asyncio.CancelledError:
+                raise
+            except Exception as e:
+                log.warning(f"Redeem loop error: {e}")
+
+            await asyncio.sleep(300)
+
+    def _write_decisions(self):
+        """Write decision pipeline snapshots from all active strategies."""
+        try:
+            decisions = {}
+            # 5m strategy
+            if getattr(config, "MARKET_5M_ENABLED", True):
+                snap = self.strategy.decision_snapshot()
+                if snap:
+                    decisions["btc_5min_fast"] = snap
+            # 15m strategy
+            if self._is_15m_enabled():
+                snap = self.strategy_15m.decision_snapshot()
+                if snap:
+                    decisions["btc_15min"] = snap
+            # Test strategies
+            if self._is_test_mode_enabled():
+                snap = self.strategy_test5.decision_snapshot()
+                if snap:
+                    decisions["btc_5min_test"] = snap
+                snap = self.strategy_test15.decision_snapshot()
+                if snap:
+                    decisions["btc_15min_test"] = snap
+
+            if decisions:
+                import time as _t
+                payload = {"ts": _t.time(), "strategies": decisions}
+                with open(config.DECISIONS_FILE, "w", encoding="utf-8") as fh:
+                    json.dump(payload, fh)
+        except Exception:
+            pass
+
     def _check_trade_size_update(self):
         """Dashboard'dan gelen trade size değişikliğini oku."""
         try:
@@ -292,6 +428,12 @@ class Bot:
                 return
             with open(path, "r") as f:
                 new_size = float(f.read().strip())
+            # Live mode'da dashboard override'i TRADE_SIZE_USD ile sinirla
+            if not config.PAPER_TRADING:
+                max_allowed = min(config.TRADE_SIZE_USD, config.BANKROLL * 0.25)
+                if new_size > max_allowed:
+                    log.warning(f"Trade size override ${new_size} capped to ${max_allowed} (live mode)")
+                    new_size = max_allowed
             if new_size > 0 and new_size != config.TRADE_SIZE_USD:
                 old_size = config.TRADE_SIZE_USD
                 config.TRADE_SIZE_USD = new_size
@@ -357,10 +499,12 @@ class Bot:
                     "market_prices": market_prices,
                     "market_15m_prices": market_15m_prices,
                     "market_15m_enabled": self._is_15m_enabled(),
+                    "test_mode_enabled": self._is_test_mode_enabled(),
                     "monitoring": mon,
                     "alarms": alarms,
                     "trade_size": config.TRADE_SIZE_USD,
                     "ai_enabled": self.predictor is not None,
+                    "pending_redeems": self.db.pending_redeem_count() if not config.PAPER_TRADING else 0,
                     "updated_at": time.strftime("%Y-%m-%d %H:%M:%S UTC", time.gmtime()),
                 })
             except Exception:

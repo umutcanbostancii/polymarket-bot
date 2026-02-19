@@ -53,6 +53,7 @@ const FACTOR_LABELS={
     this.setupArbControls();
     this.setupManualTrade();
     this.setupDecisionsToggle();
+    this._initTradeFilters();
     await this.loadInitialData();
     this.connectWS();
     this._countdownTimer=setInterval(()=>this.updateCountdown(),1000);
@@ -292,10 +293,117 @@ Dashboard.prototype.updateCountdown=function(){
   return `<span style="color:${color};font-weight:600">${prefix}${durLabel}</span> ${start}-${end}`;
 };
 
+Dashboard.prototype._tradeFilters={date:'all',mode:'all',market:'all',side:'all',status:'all'};
+
+Dashboard.prototype._filterTrades=function(trades){
+  const f=this._tradeFilters;
+  const now=new Date();
+  const todayStr=now.toISOString().slice(0,10);
+  const yesterday=new Date(now);yesterday.setDate(yesterday.getDate()-1);
+  const yesterdayStr=yesterday.toISOString().slice(0,10);
+  const weekAgo=new Date(now);weekAgo.setDate(weekAgo.getDate()-7);
+
+  return trades.filter(t=>{
+    if(f.date!=='all'){
+      const tDate=t.ts?(typeof t.ts==='string'?t.ts:'').slice(0,10):'';
+      if(f.date==='today'&&tDate!==todayStr)return false;
+      if(f.date==='yesterday'&&tDate!==yesterdayStr)return false;
+      if(f.date==='week'){
+        const td=new Date(t.ts);
+        if(isNaN(td.getTime())||td<weekAgo)return false;
+      }
+    }
+    if(f.mode!=='all'){
+      const isPaper=t.is_paper===1||t.is_paper===true;
+      if(f.mode==='paper'&&!isPaper)return false;
+      if(f.mode==='live'&&isPaper)return false;
+    }
+    if(f.market!=='all'){
+      const strat=t.strategy||'';
+      if(f.market==='5m'&&(strat.includes('15min')||strat.includes('15m')))return false;
+      if(f.market==='15m'&&!strat.includes('15min')&&!strat.includes('15m'))return false;
+    }
+    if(f.side!=='all'){
+      const side=(t.side||'').toUpperCase();
+      if(f.side==='up'&&!side.includes('UP'))return false;
+      if(f.side==='down'&&!side.includes('DOWN'))return false;
+    }
+    if(f.status!=='all'){
+      const pnl=t.pnl;
+      const isPending=pnl===null||pnl===undefined||pnl===0;
+      if(f.status==='win'&&!(pnl>0))return false;
+      if(f.status==='loss'&&!(pnl<0))return false;
+      if(f.status==='pending'&&!isPending)return false;
+    }
+    return true;
+  });
+};
+
+Dashboard.prototype._computeSummary=function(trades){
+  const parsed=trades.map(t=>({pnl:parseFloat(t.pnl)||0,cost:parseFloat(t.cost)||0}));
+  const resolved=parsed.filter(t=>t.pnl!==0);
+  const wins=resolved.filter(t=>t.pnl>0);
+  const losses=resolved.filter(t=>t.pnl<0);
+  const pending=parsed.filter(t=>t.pnl===0);
+  return{
+    total:parsed.length,resolved:resolved.length,
+    wins:wins.length,losses:losses.length,pending:pending.length,
+    winRate:resolved.length?(wins.length/resolved.length*100).toFixed(1):'0',
+    totalPnl:resolved.reduce((s,t)=>s+t.pnl,0),
+    totalProfit:wins.reduce((s,t)=>s+t.pnl,0),
+    totalLoss:losses.reduce((s,t)=>s+t.pnl,0),
+    avgWin:wins.length?wins.reduce((s,t)=>s+t.pnl,0)/wins.length:0,
+    avgLoss:losses.length?losses.reduce((s,t)=>s+t.pnl,0)/losses.length:0,
+    totalCost:parsed.reduce((s,t)=>s+t.cost,0),
+  };
+};
+
+Dashboard.prototype._renderSummary=function(summary){
+  const el=$('#filter-summary');
+  if(!el)return;
+  const fmt=v=>(v>=0?'+':'')+`$${v.toFixed(2)}`;
+  const cls=v=>v>=0?'positive':'negative';
+  el.innerHTML=`
+    <div class="summary-title">Ozet</div>
+    <div class="summary-row"><span>Toplam</span><span>${summary.total} islem</span></div>
+    <div class="summary-row"><span>Kazanan</span><span class="summary-value positive">${summary.wins} (%${summary.winRate})</span></div>
+    <div class="summary-row"><span>Kaybeden</span><span class="summary-value negative">${summary.losses}</span></div>
+    <div class="summary-row"><span>Beklemede</span><span>${summary.pending}</span></div>
+    <div class="summary-divider"></div>
+    <div class="summary-row"><span>Kar</span><span class="summary-value positive">${fmt(summary.totalProfit)}</span></div>
+    <div class="summary-row"><span>Zarar</span><span class="summary-value negative">$${summary.totalLoss.toFixed(2)}</span></div>
+    <div class="summary-row total"><span>Net</span><span class="summary-value ${cls(summary.totalPnl)}">${fmt(summary.totalPnl)}</span></div>
+    <div class="summary-divider"></div>
+    <div class="summary-row"><span>Ort Kar</span><span class="summary-value">${fmt(summary.avgWin)}</span></div>
+    <div class="summary-row"><span>Ort Zarar</span><span class="summary-value">$${summary.avgLoss.toFixed(2)}</span></div>
+    <div class="summary-row"><span>Toplam Maliyet</span><span>$${summary.totalCost.toFixed(2)}</span></div>`;
+};
+
+Dashboard.prototype._initTradeFilters=function(){
+  const self=this;
+  const ids=['filter-date','filter-mode','filter-market','filter-side','filter-status'];
+  const keys=['date','mode','market','side','status'];
+  ids.forEach((id,i)=>{
+    const el=$('#'+id);
+    if(el)el.addEventListener('change',function(){
+      self._tradeFilters[keys[i]]=this.value;
+      self.renderTrades();
+    });
+  });
+  const clearBtn=$('#filter-clear');
+  if(clearBtn)clearBtn.addEventListener('click',function(){
+    self._tradeFilters={date:'all',mode:'all',market:'all',side:'all',status:'all'};
+    ids.forEach((id,i)=>{
+      const el=$('#'+id);
+      if(el)el.value=self._tradeFilters[keys[i]];
+    });
+    self.renderTrades();
+  });
+};
+
 Dashboard.prototype.renderTrades=function(){
   const tbody=$('#trades-body');
-  const validStrategies=['btc_5min_fast','btc_15min','btc_5min_test','btc_15min_test','manual_5m','manual_15m'];
-  const filtered=this.trades.filter(t=>validStrategies.includes(t.strategy)||!t.strategy);
+  const filtered=this._filterTrades(this.trades);
   $('#trade-count').textContent=`${filtered.length} islem`;
   let html='';
   for(const t of filtered){
@@ -325,6 +433,7 @@ Dashboard.prototype.renderTrades=function(){
       <td class="pnl-cell ${pnlClass}">${pnlText}</td></tr>`;
   }
   tbody.innerHTML=html||'<tr><td colspan="11" class="empty">Henuz islem yok</td></tr>';
+  this._renderSummary(this._computeSummary(filtered));
 };
 
 Dashboard.prototype.onNewTrade=function(trade){
@@ -996,7 +1105,7 @@ Dashboard.prototype.loadInitialData=async function(){
   try{
     const[klines,trades,stats,status,analytics,liveStats,decisions]=await Promise.all([
       fetch(`/api/klines?interval=${this.currentInterval}&limit=300`).then(r=>r.json()),
-      fetch('/api/trades?limit=100').then(r=>r.json()),
+      fetch('/api/trades?limit=1000&strategies=main').then(r=>r.json()),
       fetch('/api/stats').then(r=>r.json()),
       fetch('/api/status').then(r=>r.json()),
       fetch('/api/analytics').then(r=>r.json()),

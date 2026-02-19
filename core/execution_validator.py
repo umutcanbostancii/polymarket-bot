@@ -54,6 +54,13 @@ class ExecutionValidator:
 
         midpoint = self._calculate_midpoint(orderbook)
         spread = self._calculate_spread(orderbook)
+        spread_pct = (spread / midpoint) if midpoint > 0 else 0.0
+
+        if spread_pct > getattr(self.cfg, "MAX_SPREAD_PCT", 1.0):
+            result["rejection_reason"] = (
+                f"wide_spread: {spread_pct:.4f} > {getattr(self.cfg, 'MAX_SPREAD_PCT', 1.0):.4f}"
+            )
+            return result
 
         # VWAP fill simulation
         vwap, filled_usd = self._calculate_vwap(
@@ -90,8 +97,14 @@ class ExecutionValidator:
         net_profit = self._estimate_net_profit(predicted_edge, vwap, market_price, size_usd)
         result["net_profit_usd"] = net_profit
 
-        if net_profit < self.cfg.MIN_NET_PROFIT_USD:
-            result["rejection_reason"] = f"low_profit: ${net_profit:.4f} < ${self.cfg.MIN_NET_PROFIT_USD}"
+        min_profit_required = max(
+            self.cfg.MIN_NET_PROFIT_USD,
+            size_usd * getattr(self.cfg, "MIN_NET_PROFIT_PCT", 0.0),
+        )
+        if net_profit < min_profit_required:
+            result["rejection_reason"] = (
+                f"low_profit: ${net_profit:.4f} < ${min_profit_required:.4f}"
+            )
             return result
 
         # 4. Fill quality
